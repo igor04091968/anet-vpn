@@ -1,4 +1,5 @@
-/target
+# Upstream build/local artifacts
+/target/
 .idea
 *.pem
 *.sh
@@ -9,6 +10,35 @@ android-build/*
 /.vscode
 /jniLibs
 jniLibs/
-/jniLibs/
 process_files.ps1
 project_report.txt
+
+# Additional secrets and live operator data
+.env.*
+!.env.example
+secrets/
+private/
+**/credentials*.txt
+**/*credential*.txt
+**/*.dump
+**/*.sql
+**/*.sqlite
+**/*.sqlite-*
+**/*.db
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/id_ed25519
+**/id_rsa
+**/client-private*.toml
+**/client-secret*.toml
+
+# Local build and editor state
+**/target/
+.ai/
+.idea/
+.vscode/
+*.log
+*.apk
+*.aab

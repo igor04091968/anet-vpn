@@ -1,0 +1,81 @@
+# =========================================================================
+# ANET Client: базовый шаблон конфигурации, который панель заполняет динамически
+# =========================================================================
+[main]
+# Название виртуального адаптера
+tun_name = "anet-client"
+
+# Включает ручное управление роутингом на клиенте
+manual_routing = false
+
+# Windows per-app split tunneling.
+# include-режим: в туннель идут ТОЛЬКО эти процессы.
+# per_app = ["firefox.exe", "telegram.exe"]
+# per_app_mode = "include"
+
+per_app = {{PER_APP}}
+per_app_mode = "{{PER_APP_MODE}}"
+
+# exclude-режим (всё, КРОМЕ указанных процессов)
+# per_app = ["steam.exe"]
+# per_app_mode = "exclude"
+
+# Настройки маршрутизации (Split Tunneling)
+route_for = {{ROUTE_FOR}}
+exclude_route_for = {{EXCLUDE_ROUTE_FOR}}
+
+# DNS-серверы для разрешения доменов
+dns_server_list = ["1.1.1.1", "8.8.8.8"]
+
+# Автообновления клиента
+update_url = "https://api.github.com/repos/ZeroTworu/anet/releases/latest"
+
+[keys]
+# Бэкенд подставляет значения при скачивании
+private_key = "{{PRIVATE_KEY}}"
+server_pub_key = "{{SERVER_PUB_KEY}}"
+
+[stats]
+enabled = true
+interval_minutes = 1
+
+[ahttp]
+concurrency = 8
+coalesce_budget_bytes = 65536
+poll_timeout_ms = 15
+http2_adaptive_window = true
+# http2_max_frame_size = 16384
+http2_max_header_list_size = 16384
+http2_keep_alive_interval_secs = 20
+http2_keep_alive_timeout_secs = 10
+http2_keep_alive_while_idle = true
+pool_max_idle_per_host = 8
+pool_idle_timeout_secs = 60
+tcp_nodelay = true
+timeout_secs = 10
+
+# Пути должны совпадать с настройками AHTTP-сервера
+handshake_path = "/handshake"
+auth_path = "/auth"
+traffic_path = "/traffic"
+
+[stealth]
+frag_enabled = true
+frag_min_chunks = 2
+frag_max_chunks = 3
+min_jitter_ns = 1000000
+max_jitter_ns = 5000000
+padding_step = 64
+
+[quic_transport]
+algorithm = "bbr"
+expected_rtt_ms = 75
+bandwidth_down_mbps = 200
+bandwidth_up_mbps = 200
+receive_window = 33554432
+stream_receive_window = 33554432
+send_window = 33554432
+enable_gso = true
+idle_timeout_seconds = 21600
+max_mtu = 1400
+keep_alive_interval_seconds = 20

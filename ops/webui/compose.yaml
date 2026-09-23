@@ -1,0 +1,59 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: anet-webui-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: anet
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  anet-auth:
+    image: ghcr.io/zerotworu/anet-auth:latest
+    container_name: anet-webui-auth
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/anet
+      BIND_TO: 0.0.0.0:3000
+      AUTH_BACKEND_KEY: ${AUTH_BACKEND_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      CLIENT_TEMPLATE_PATH: /opt/anet/client_template.toml
+    volumes:
+      - ./client_template.toml:/opt/anet/client_template.toml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3300:3000"
+    restart: unless-stopped
+
+  anet-webui:
+    image: ghcr.io/zerotworu/anet-webui:latest
+    container_name: anet-webui
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:8088:80"
+    depends_on:
+      - anet-auth
+    restart: unless-stopped
+
+  anet-webui-snb-proxy:
+    image: nginx:alpine
+    container_name: anet-webui-snb-proxy
+    ports:
+      - "10.19.2.83:8088:8088"
+    volumes:
+      - ./nginx-snb-proxy.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - anet-webui
+    restart: unless-stopped
+
+volumes:
+  pg_data:
