@@ -40,6 +40,15 @@ impl CryptoAlgorithm {
     pub const fn envelope_overhead(self) -> usize {
         self.wire_marker().len() + self.nonce_len() + self.tag_len() + 10
     }
+
+    /// Routing hint only; authenticate the whole packet before trusting it.
+    pub fn session_prefix(self, packet: &[u8]) -> Option<&[u8]> {
+        let start = self.wire_marker().len();
+        if packet.len() < self.envelope_overhead() || !packet.starts_with(self.wire_marker()) {
+            return None;
+        }
+        Some(&packet[start..start + self.nonce_prefix_len()])
+    }
 }
 
 impl FromStr for CryptoAlgorithm {
@@ -63,6 +72,7 @@ enum CipherInner {
 pub struct Cipher {
     cipher: Arc<CipherInner>,
     algorithm: CryptoAlgorithm,
+    server_nonce_domain: bool,
 }
 
 impl Cipher {
@@ -88,7 +98,16 @@ impl Cipher {
         Ok(Self {
             cipher: Arc::new(cipher),
             algorithm,
+            server_nonce_domain: false,
         })
+    }
+
+    /// Peers share a key. Reserve the high sequence bit in the wire nonce
+    /// for server transmissions, leaving the plaintext ordering counter intact.
+    /// Existing clients decrypt the supplied nonce without reconstructing it.
+    pub fn with_server_nonce_domain(mut self) -> Self {
+        self.server_nonce_domain = true;
+        self
     }
 
     pub const fn algorithm(&self) -> CryptoAlgorithm {
@@ -230,6 +249,12 @@ impl Cipher {
         let mut nonce = vec![0; self.nonce_len()];
         nonce[..prefix.len()].copy_from_slice(prefix);
         nonce[prefix.len()..].copy_from_slice(&sequence.to_be_bytes());
+        if sequence >= (1u64 << 63) {
+            return Err(EncryptionError::NonceExhausted);
+        }
+        if self.server_nonce_domain {
+            nonce[prefix.len()] |= 0x80;
+        }
         if self.algorithm == CryptoAlgorithm::KuznyechikMgm {
             nonce[0] &= 0x7f;
         }
@@ -239,6 +264,7 @@ impl Cipher {
 
 #[derive(Debug)]
 pub enum EncryptionError {
+    NonceExhausted,
     InvalidKeyLength,
     InvalidNonceLength,
     InvalidPacketHeader,

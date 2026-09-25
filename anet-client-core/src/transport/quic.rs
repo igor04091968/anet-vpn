@@ -18,6 +18,10 @@ use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::UdpSocket;
 
+#[cfg(test)]
+#[path = "quic_live_tests.rs"]
+mod live_tests;
+
 pub struct QuicDuplexStream {
     send: SendStream,
     recv: RecvStream,

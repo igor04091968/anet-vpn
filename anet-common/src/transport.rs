@@ -182,6 +182,50 @@ mod in_place_tests {
     use super::*;
 
     #[test]
+    fn session_routing_uses_prefix_before_counter_for_both_algorithms() {
+        use crate::encryption::CryptoAlgorithm::*;
+        for algorithm in [ChaCha20Poly1305, KuznyechikMgm] {
+            let cipher = Cipher::with_algorithm(&[3; 32], algorithm).unwrap();
+            let prefix = vec![0x31; algorithm.nonce_prefix_len()];
+            let packet = wrap_packet(&cipher, &prefix, 42, Bytes::from_static(b"data"), 0).unwrap();
+            assert_eq!(algorithm.session_prefix(&packet), Some(prefix.as_slice()));
+            for len in 0..algorithm.envelope_overhead() {
+                assert!(algorithm.session_prefix(&packet[..len]).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn directions_have_distinct_nonces_and_preserve_ordering_counter() {
+        use crate::encryption::CryptoAlgorithm::{ChaCha20Poly1305, KuznyechikMgm};
+        for algorithm in [ChaCha20Poly1305, KuznyechikMgm] {
+            let client = Cipher::with_algorithm(&[3; 32], algorithm).unwrap();
+            let server = client.clone().with_server_nonce_domain();
+            let prefix = vec![0x31; algorithm.nonce_prefix_len()];
+            let data = Bytes::from_static(b"same packet in both directions");
+            for seq in [0, 1, (1u64 << 63) - 1] {
+                let up = wrap_packet(&client, &prefix, seq, data.clone(), 0).unwrap();
+                let down = wrap_packet(&server, &prefix, seq, data.clone(), 0).unwrap();
+                assert_ne!(
+                    client.split_frame(&up).unwrap().0,
+                    client.split_frame(&down).unwrap().0
+                );
+                assert_eq!(unwrap_packet(&client, &down).unwrap(), data);
+                assert_eq!(unwrap_packet(&server, &up).unwrap(), data);
+                assert_eq!(algorithm.session_prefix(&down), Some(prefix.as_slice()));
+                let (nonce, body) = client.split_frame(&down).unwrap();
+                let plaintext = client.decrypt(nonce, Bytes::copy_from_slice(body)).unwrap();
+                assert_eq!(&plaintext[..8], &seq.to_be_bytes());
+                let mut corrupted = down.to_vec();
+                *corrupted.last_mut().unwrap() ^= 1;
+                assert!(unwrap_packet(&client, &corrupted).is_err());
+            }
+            assert!(client.generate_nonce(&prefix, 1u64 << 63).is_err());
+            assert!(server.generate_nonce(&prefix, 1u64 << 63).is_err());
+        }
+    }
+
+    #[test]
     fn owned_in_place_unwrap_matches_allocating_path() {
         let cipher = Cipher::new(&[9; 32]);
         let payload = Bytes::from_static(b"test IP packet payload");

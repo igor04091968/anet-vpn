@@ -163,21 +163,8 @@ impl AsyncUdpSocket for MultiKeyAnetUdpSocket {
                     let mut known_session = false;
 
                     // 1. Попытка распознать сессию (Session Data)
-                    let marker = self.crypto_algorithm.wire_marker();
-                    if filled_len
-                        >= marker.len()
-                            + self.crypto_algorithm.nonce_len()
-                            + self.crypto_algorithm.tag_len()
-                            + 1
-                        && raw_packet_mut.starts_with(marker)
-                    {
-                        let prefix_len = self.crypto_algorithm.nonce_prefix_len();
-                        let prefix_start =
-                            marker.len() + self.crypto_algorithm.nonce_len() - prefix_len;
-                        if let Some(client_info) = self
-                            .registry
-                            .get_by_prefix(&raw_packet_mut[prefix_start..prefix_start + prefix_len])
-                        {
+                    if let Some(prefix) = self.crypto_algorithm.session_prefix(raw_packet_mut) {
+                        if let Some(client_info) = self.registry.get_by_prefix(prefix) {
                             known_session = true;
                             match transport::unwrap_packet_in_place(
                                 &client_info.cipher,

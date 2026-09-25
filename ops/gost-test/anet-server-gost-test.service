@@ -1,0 +1,22 @@
+[Unit]
+Description=ANet GOST interoperability test on UDP 2445
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/anet/gost-test
+Environment=RUST_LOG=info
+ExecStartPre=/opt/anet/gost-test/firewall.sh start
+ExecStart=/opt/anet/gost-test/anet-server -c /opt/anet/gost-test/server.toml
+ExecStopPost=/opt/anet/gost-test/firewall.sh stop
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

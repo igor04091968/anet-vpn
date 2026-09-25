@@ -469,10 +469,10 @@ impl ServerAuthHandler {
             generate_unique_nonce_prefix(self.registry.clone(), self.crypto_algorithm);
 
         let client_info = Arc::new(ClientTransportInfo {
-            cipher: Arc::new(Cipher::with_algorithm(
-                &temp_info.shared_key,
-                self.crypto_algorithm,
-            )?),
+            cipher: Arc::new(
+                Cipher::with_algorithm(&temp_info.shared_key, self.crypto_algorithm)?
+                    .with_server_nonce_domain(),
+            ),
             sequence: Arc::new(AtomicU64::new(0)),
             assigned_ip: assigned_ip.clone(),
             session_id: session_id.clone(),

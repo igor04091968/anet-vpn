@@ -128,7 +128,10 @@ pub async fn run_quic_server(
             };
 
             let client_ip = client_info.assigned_ip.clone();
-            info!("QUIC Connected. Routed IP: {}", client_ip);
+            info!(
+                "QUIC Connected. Routed IP: {}, crypto: {:?}",
+                client_ip, c.crypto.algorithm
+            );
 
             if let Ok((send, mut recv)) = conn.accept_bi().await {
                 let (tx_router, rx_router) = mpsc::channel::<Bytes>(CHANNEL_BUFFER_SIZE);
@@ -152,7 +155,24 @@ pub async fn run_quic_server(
                 let ci_rx = client_info.clone();
                 let rx_registry = r.clone();
                 let mut reader_task = tokio::spawn(async move {
-                    while let Ok(Some(pkt)) = read_next_packet(&mut recv).await {
+                    loop {
+                        let pkt = match read_next_packet(&mut recv).await {
+                            Ok(Some(packet)) => packet,
+                            Ok(None) => {
+                                info!(
+                                    "[QUIC] Client {} receive stream reached EOF",
+                                    ci_rx.assigned_ip
+                                );
+                                break;
+                            }
+                            Err(error) => {
+                                warn!(
+                                    "[QUIC] Client {} receive error: {error:#}",
+                                    ci_rx.assigned_ip
+                                );
+                                break;
+                            }
+                        };
                         let packet_len = pkt.len();
 
                         // BACKPRESSURE ДЛЯ QUIC
@@ -191,10 +211,20 @@ pub async fn run_quic_server(
                     client_info.assigned_ip
                 );
 
-                conn.close(0u32.into(), b"Disconnected by admin");
-
+                let stats = conn.stats();
+                info!(
+                    "[QUIC] Session ended: ip={}, reason={:?}, rtt={:?}, lost={}, udp_rx={}, udp_tx={}",
+                    client_info.assigned_ip,
+                    conn.close_reason(),
+                    stats.path.rtt,
+                    stats.path.lost_packets,
+                    stats.udp_rx.datagrams,
+                    stats.udp_tx.datagrams
+                );
+                conn.close(0u32.into(), b"Tunnel stream ended");
                 r.remove_client(&client_info).await;
             } else {
+                conn.close(0u32.into(), b"Tunnel stream ended");
                 r.remove_client(&client_info).await;
             }
         });
