@@ -1,4 +1,4 @@
-use crate::consts::{NONCE_LEN, NONCE_PREFIX_LEN, PADDING_MTU, TRANSPORT_ENVELOPE_OVERHEAD};
+use crate::consts::PADDING_MTU;
 use crate::encryption::{Cipher, EncryptionError};
 use crate::padding_utils::calculate_padding_needed;
 use anyhow::{Result, anyhow};
@@ -7,7 +7,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 /// Упаковывает и шифрует QUIC-пакет с новым протоколом
 pub fn wrap_packet(
     cipher: &Cipher,
-    nonce_prefix: &[u8; NONCE_PREFIX_LEN],
+    nonce_prefix: &[u8],
     sequence: u64,
     quic_payload: Bytes,
     padding_size: u16,
@@ -18,22 +18,25 @@ pub fn wrap_packet(
 /// Packs and encrypts a packet using a single output allocation.
 pub fn wrap_packet_slice(
     cipher: &Cipher,
-    nonce_prefix: &[u8; NONCE_PREFIX_LEN],
+    nonce_prefix: &[u8],
     sequence: u64,
     payload: &[u8],
     padding_size: u16,
 ) -> Result<Bytes, EncryptionError> {
     let payload_len = payload.len();
 
-    // Nonce = [prefix][sequence]
-    let mut nonce = [0u8; NONCE_LEN];
-    nonce[..NONCE_PREFIX_LEN].copy_from_slice(nonce_prefix);
-    // Последние 8 байт nonce - это сам sequence, для уникальности
-    nonce[NONCE_PREFIX_LEN..].copy_from_slice(&sequence.to_be_bytes());
+    let nonce = cipher.generate_nonce(nonce_prefix, sequence)?;
 
     // Reserve the final wire buffer once: nonce + plaintext + authentication tag.
-    let mut final_packet =
-        BytesMut::with_capacity(NONCE_LEN + 10 + payload_len + padding_size as usize + 16);
+    let mut final_packet = BytesMut::with_capacity(
+        cipher.wire_marker_len()
+            + nonce.len()
+            + 10
+            + payload_len
+            + padding_size as usize
+            + cipher.tag_len(),
+    );
+    final_packet.put_slice(cipher.wire_marker());
     final_packet.put_slice(&nonce);
     final_packet.put_u64(sequence);
     final_packet.put_u16(payload_len as u16);
@@ -41,7 +44,7 @@ pub fn wrap_packet_slice(
     final_packet.put_bytes(0, padding_size as usize);
 
     let tag = {
-        let plaintext = &mut final_packet[NONCE_LEN..];
+        let plaintext = &mut final_packet[cipher.wire_marker_len() + nonce.len()..];
         cipher.encrypt_in_place_detached(&nonce, plaintext)?
     };
     final_packet.put_slice(&tag);
@@ -53,12 +56,12 @@ pub fn wrap_packet_slice(
 #[inline]
 pub fn wrap_packet_padded(
     cipher: &Cipher,
-    nonce_prefix: &[u8; NONCE_PREFIX_LEN],
+    nonce_prefix: &[u8],
     sequence: u64,
     payload: Bytes,
     padding_step: u16,
 ) -> Result<Bytes, EncryptionError> {
-    let wire_len_without_padding = payload.len() + TRANSPORT_ENVELOPE_OVERHEAD;
+    let wire_len_without_padding = payload.len() + cipher.envelope_overhead();
     let requested_padding = calculate_padding_needed(wire_len_without_padding, padding_step);
     let padding = if wire_len_without_padding + usize::from(requested_padding) <= PADDING_MTU {
         requested_padding
@@ -70,13 +73,15 @@ pub fn wrap_packet_padded(
 
 /// Расшифровывает пакет, полученный от сервера
 pub fn unwrap_packet(cipher: &Cipher, raw_packet: &[u8]) -> Result<Bytes> {
-    if raw_packet.len() < NONCE_LEN + 1 {
+    if raw_packet.len() < cipher.wire_marker_len() + cipher.nonce_len() + cipher.tag_len()
+        || !raw_packet.starts_with(cipher.wire_marker())
+    {
         // Nonce + минимум 1 байт payload
         return Err(anyhow!("Packet too short"));
     }
 
     // Извлекаем nonce и зашифрованные данные
-    let (nonce, ciphertext) = raw_packet.split_at(NONCE_LEN);
+    let (nonce, ciphertext) = cipher.split_frame(raw_packet)?;
 
     // Расшифровываем
     let mut plaintext = cipher.decrypt(nonce, Bytes::copy_from_slice(ciphertext))?;
@@ -100,23 +105,26 @@ pub fn unwrap_packet(cipher: &Cipher, raw_packet: &[u8]) -> Result<Bytes> {
 /// Возвращает срез с полезной нагрузкой (Quic Payload).
 pub fn unwrap_packet_in_place<'a>(cipher: &Cipher, buffer: &'a mut [u8]) -> Result<&'a [u8]> {
     // 16 байт - размер тега Poly1305
-    if buffer.len() < NONCE_LEN + 16 {
+    if buffer.len() < cipher.wire_marker_len() + cipher.nonce_len() + cipher.tag_len()
+        || !buffer.starts_with(cipher.wire_marker())
+    {
         return Err(anyhow!("Packet too short"));
     }
 
-    // 1. Копируем Nonce (12 байт), так как decrypt_in_place будет менять buffer
-    let mut nonce = [0u8; NONCE_LEN];
-    nonce.copy_from_slice(&buffer[..NONCE_LEN]);
+    let nonce_len = cipher.nonce_len();
+    let mut nonce = [0u8; 16];
+    let marker_len = cipher.wire_marker_len();
+    nonce[..nonce_len].copy_from_slice(&buffer[marker_len..marker_len + nonce_len]);
 
     // 2. Берем срез данных (включая Tag в конце)
-    let payload_buffer = &mut buffer[NONCE_LEN..];
+    let payload_buffer = &mut buffer[marker_len + nonce_len..];
 
     // 3. Расшифровываем на месте
-    cipher.decrypt_in_place(&nonce, payload_buffer)?;
+    cipher.decrypt_in_place(&nonce[..nonce_len], payload_buffer)?;
 
     // 4. Отрезаем тег (логически).
     // Реальная длина данных теперь меньше на 16 байт.
-    let plaintext_len = payload_buffer.len() - 16;
+    let plaintext_len = payload_buffer.len() - cipher.tag_len();
     let plaintext = &payload_buffer[..plaintext_len];
 
     // 5. Парсим заголовок ANet: [Seq (8)] [Len (2)] [Payload...] [Padding...]
@@ -147,7 +155,7 @@ pub fn unwrap_packet_bytes_in_place(cipher: &Cipher, raw_packet: Bytes) -> Resul
 
     let payload = unwrap_packet_in_place(cipher, &mut buffer)?;
     let payload_len = payload.len();
-    let payload_start = NONCE_LEN + 10;
+    let payload_start = cipher.wire_marker_len() + cipher.nonce_len() + 10;
     let payload_end = payload_start + payload_len;
     buffer.truncate(payload_end);
     Ok(buffer.freeze().slice(payload_start..payload_end))
@@ -163,7 +171,7 @@ pub fn unwrap_packet_bytes(cipher: &Cipher, raw_packet: Bytes) -> Result<Bytes> 
 
     let payload = unwrap_packet_in_place(cipher, &mut buffer)?;
     let payload_len = payload.len();
-    let payload_start = NONCE_LEN + 10;
+    let payload_start = cipher.wire_marker_len() + cipher.nonce_len() + 10;
     let payload_end = payload_start + payload_len;
     buffer.truncate(payload_end);
     Ok(buffer.freeze().slice(payload_start..payload_end))
@@ -206,5 +214,23 @@ mod in_place_tests {
 
         assert_eq!(unwrap_packet_bytes(&cipher, encrypted).unwrap(), payload);
         assert!(!shared.is_empty());
+    }
+
+    #[test]
+    fn kuznyechik_mgm_transport_round_trips() {
+        let cipher = Cipher::with_algorithm(
+            &[0x42; 32],
+            crate::encryption::CryptoAlgorithm::KuznyechikMgm,
+        )
+        .unwrap();
+        let payload = Bytes::from_static(b"GOST QUIC payload");
+        let encrypted =
+            wrap_packet(&cipher, &[1, 2, 3, 4, 5, 6, 7, 8], 42, payload.clone(), 7).unwrap();
+        assert_eq!(
+            encrypted.len(),
+            cipher.wire_marker_len() + 16 + 10 + payload.len() + 7 + 16
+        );
+        assert!(encrypted.starts_with(b"ANETGOST1"));
+        assert_eq!(unwrap_packet(&cipher, &encrypted).unwrap(), payload);
     }
 }

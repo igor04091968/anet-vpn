@@ -57,3 +57,6 @@ anet-appfilter = { path = "../anet-appfilter" }
 
 [lib]
 path = "src/lib.rs"
+
+[dev-dependencies]
+toml = { workspace = true }

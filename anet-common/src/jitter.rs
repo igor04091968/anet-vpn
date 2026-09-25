@@ -101,7 +101,7 @@ pub async fn bridge_crypto_stream_with_jitter<S>(
     config: StealthConfig,
     cipher: Arc<Cipher>,
     sequence: Arc<AtomicU64>,
-    nonce_prefix: [u8; 4],
+    nonce_prefix: Vec<u8>,
 ) -> anyhow::Result<()>
 where
     S: AsyncWriteExt + Unpin + Send + 'static,
@@ -115,7 +115,7 @@ where
 
     let encrypt_into = |packet: Bytes, buf: &mut BytesMut| -> anyhow::Result<()> {
         let seq = sequence.fetch_add(1, Ordering::Relaxed);
-        let total_len = packet.len() + 38;
+        let total_len = packet.len() + cipher.envelope_overhead();
         let pad = calculate_padding_needed(total_len, padding_step);
         let safe_pad = if total_len + (pad as usize) > crate::consts::PADDING_MTU {
             0
@@ -193,7 +193,9 @@ where
             if let Err(e) = stream.write_all(&buf).await {
                 log::warn!(
                     "[CryptoStream/Tx] Stream write failed: {e:#}. Sent so far: {} packets, {} bytes in {:.1}s",
-                    pkt_count, byte_count, start.elapsed().as_secs_f64()
+                    pkt_count,
+                    byte_count,
+                    start.elapsed().as_secs_f64()
                 );
                 return Err(e.into());
             }
@@ -203,7 +205,9 @@ where
 
     log::info!(
         "[CryptoStream/Tx] Finished outbound crypto stream. Total sent: {} packets, {} bytes in {:.1}s",
-        pkt_count, byte_count, start.elapsed().as_secs_f64()
+        pkt_count,
+        byte_count,
+        start.elapsed().as_secs_f64()
     );
     stream.shutdown().await?;
     Ok(())
@@ -223,7 +227,7 @@ fn schedule_with_jitter(
             }
             packet
         }
-            .boxed(),
+        .boxed(),
     );
 }
 
@@ -253,7 +257,10 @@ where
 
     log::info!(
         "[CryptoStream/Rx] Reached EOF on inbound stream. Read: {} packets ({} bytes) in {:.1}s (last packet {:.3}s ago)",
-        pkt_count, byte_count, start.elapsed().as_secs_f64(), last_pkt.elapsed().as_secs_f64()
+        pkt_count,
+        byte_count,
+        start.elapsed().as_secs_f64(),
+        last_pkt.elapsed().as_secs_f64()
     );
     Ok(())
 }

@@ -1,0 +1,23 @@
+# Template only. Replace both keys with values provisioned for this client.
+# Keep private_key secret. Server and client must use the same algorithm.
+
+[crypto]
+algorithm = "kuznyechik-mgm"
+
+[main]
+tun_name = "anet-client"
+route_for = []
+exclude_route_for = []
+
+[[servers]]
+name = "gw"
+dsn = "quic://201363.senko.network:993"
+
+[keys]
+private_key = ""
+server_pub_key = ""
+
+[stealth]
+padding_step = 64
+min_jitter_ns = 100000
+max_jitter_ns = 500000

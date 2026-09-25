@@ -1,13 +1,12 @@
 use crate::client_registry::ClientRegistry;
 use anet_common::config::StealthConfig;
-use anet_common::consts::{
-    MAX_PACKET_SIZE, MIN_HANDSHAKE_LEN, NONCE_LEN, PADDING_MTU, TRANSPORT_ENVELOPE_OVERHEAD,
-};
+use anet_common::consts::{MAX_PACKET_SIZE, MIN_HANDSHAKE_LEN, PADDING_MTU};
+use anet_common::dto::BillingType;
+use anet_common::encryption::CryptoAlgorithm;
 use anet_common::handshake_fragmentation::DatagramReassembler;
 use anet_common::padding_utils::calculate_padding_needed;
 use anet_common::transport;
 use anet_common::udp_poller::TokioUdpPoller;
-use anet_common::dto::BillingType;
 
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -60,6 +59,7 @@ pub struct MultiKeyAnetUdpSocket {
     registry: Arc<ClientRegistry>,
     auth_tx: mpsc::Sender<HandshakeData>,
     stealth_config: StealthConfig,
+    crypto_algorithm: CryptoAlgorithm,
     // Реассемблер фрагментированных UDP-хендшейков, по адресу источника.
     // Храним вместе с меткой времени первого фрагмента — если сборка не
     // завершилась в разумное время (клиент оборвался/потерял датаграмму),
@@ -76,12 +76,14 @@ impl MultiKeyAnetUdpSocket {
         registry: Arc<ClientRegistry>,
         auth_tx: mpsc::Sender<HandshakeData>,
         stealth_config: StealthConfig,
+        crypto_algorithm: CryptoAlgorithm,
     ) -> Self {
         Self {
             io,
             registry,
             auth_tx,
             stealth_config,
+            crypto_algorithm,
             reassemblers: Arc::new(DashMap::new()),
         }
     }
@@ -107,7 +109,7 @@ impl AsyncUdpSocket for MultiKeyAnetUdpSocket {
         if let Some(info) = self.registry.get_by_addr(&transmit.destination) {
             let seq = info.sequence.fetch_add(1, Ordering::Relaxed);
 
-            let total_len = transmit.contents.len() + TRANSPORT_ENVELOPE_OVERHEAD;
+            let total_len = transmit.contents.len() + info.cipher.envelope_overhead();
             let padding = calculate_padding_needed(total_len, self.stealth_config.padding_step);
             let safe_padding = if total_len + (padding as usize) > PADDING_MTU {
                 0
@@ -127,10 +129,9 @@ impl AsyncUdpSocket for MultiKeyAnetUdpSocket {
                 .try_send_to(&wrapped, transmit.destination)
                 .map(|_| ())
         } else {
-            Err(io::Error::new(
-                io::ErrorKind::NotConnected,
-                format!("no session for {}", transmit.destination),
-            ))
+            // Quinn shares this socket across connections. A removed session's
+            // final retransmission must not fail the entire endpoint.
+            Ok(())
         }
     }
 
@@ -159,51 +160,67 @@ impl AsyncUdpSocket for MultiKeyAnetUdpSocket {
 
                     let raw_packet_mut = &mut recv_buf[..filled_len];
                     let mut packet_for_quinn = false;
+                    let mut known_session = false;
 
                     // 1. Попытка распознать сессию (Session Data)
-                    if filled_len >= NONCE_LEN + 1 {
-                        // Пробуем взять префикс
-                        if let Ok(nonce_prefix) = raw_packet_mut[..4].try_into() {
-                            if let Some(client_info) = self.registry.get_by_prefix(&nonce_prefix) {
-                                self.registry.update_client_addr(&client_info, remote_addr);
-
-                                match transport::unwrap_packet_in_place(
-                                    &client_info.cipher,
-                                    raw_packet_mut,
-                                ) {
-                                    Ok(quic_payload) => {
-                                        // УРА! Это пакет для Quinn (данные туннеля)
-                                        let buf = &mut bufs[i];
-                                        let copy_len = quic_payload.len().min(buf.len());
-                                        buf[..copy_len].copy_from_slice(&quic_payload[..copy_len]);
-
-                                        meta[i] = RecvMeta {
-                                            addr: remote_addr,
-                                            len: copy_len,
-                                            stride: copy_len,
-                                            dst_ip: None,
-                                            ecn: None,
-                                        };
-
-                                        count += 1;
-                                        i += 1; // Переходим к следующему слоту Quinn
-                                        packet_for_quinn = true;
-                                    }
-                                    Err(e) => {
+                    let marker = self.crypto_algorithm.wire_marker();
+                    if filled_len
+                        >= marker.len()
+                            + self.crypto_algorithm.nonce_len()
+                            + self.crypto_algorithm.tag_len()
+                            + 1
+                        && raw_packet_mut.starts_with(marker)
+                    {
+                        let prefix_len = self.crypto_algorithm.nonce_prefix_len();
+                        let prefix_start =
+                            marker.len() + self.crypto_algorithm.nonce_len() - prefix_len;
+                        if let Some(client_info) = self
+                            .registry
+                            .get_by_prefix(&raw_packet_mut[prefix_start..prefix_start + prefix_len])
+                        {
+                            known_session = true;
+                            match transport::unwrap_packet_in_place(
+                                &client_info.cipher,
+                                raw_packet_mut,
+                            ) {
+                                Ok(quic_payload) => {
+                                    self.registry.touch_activity(&client_info);
+                                    self.registry.update_client_addr(&client_info, remote_addr);
+                                    // УРА! Это пакет для Quinn (данные туннеля)
+                                    let buf = &mut bufs[i];
+                                    if quic_payload.len() > buf.len() {
                                         warn!(
-                                            "Session decryption failed for {}: {}",
-                                            remote_addr, e
+                                            "Dropping oversized authenticated datagram from {}",
+                                            remote_addr
                                         );
-                                        // Пакет битый, Quinn его не получит.
-                                        // Но цикл не прерываем, читаем дальше.
+                                        continue;
                                     }
+                                    let copy_len = quic_payload.len();
+                                    buf[..copy_len].copy_from_slice(&quic_payload[..copy_len]);
+
+                                    meta[i] = RecvMeta {
+                                        addr: remote_addr,
+                                        len: copy_len,
+                                        stride: copy_len,
+                                        dst_ip: None,
+                                        ecn: None,
+                                    };
+
+                                    count += 1;
+                                    i += 1; // Переходим к следующему слоту Quinn
+                                    packet_for_quinn = true;
+                                }
+                                Err(e) => {
+                                    warn!("Session decryption failed for {}: {}", remote_addr, e);
+                                    // Пакет битый, Quinn его не получит.
+                                    // Но цикл не прерываем, читаем дальше.
                                 }
                             }
                         }
                     }
 
                     // 2. Если это не пакет сессии - проверяем Хендшейк
-                    if !packet_for_quinn {
+                    if !packet_for_quinn && !known_session {
                         // Собираем через реассемблер ДО проверки MIN_HANDSHAKE_LEN:
                         // отдельные фрагменты хендшейка (при включённой
                         // фрагментации на клиенте)

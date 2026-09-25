@@ -78,8 +78,8 @@ impl ClientTransport for VncTransport {
             RFB_HANDSHAKE_TIMEOUT,
             emulate_rfb_client_handshake(&mut stream),
         )
-            .await
-            .context("timed out during the VNC handshake")??;
+        .await
+        .context("timed out during the VNC handshake")??;
 
         info!("[VNC] RFB handshake complete; starting ASTP authentication");
         let auth_channel = VncAuthChannel {
@@ -94,12 +94,11 @@ impl ClientTransport for VncTransport {
         let (client_stream, internal_stream) = tokio::io::duplex(MAX_PACKET_SIZE * 10);
         let (tunnel_reader, tunnel_writer) = tokio::io::split(internal_stream);
 
-        let cipher = Arc::new(anet_common::encryption::Cipher::new(&shared_key));
-        let nonce_prefix = auth_response
-            .nonce_prefix
-            .as_slice()
-            .try_into()
-            .context("server returned an invalid nonce prefix")?;
+        let cipher = Arc::new(anet_common::encryption::Cipher::with_algorithm(
+            &shared_key,
+            self.config.crypto.algorithm,
+        )?);
+        let nonce_prefix = auth_response.nonce_prefix.clone();
         let sequence = Arc::new(AtomicU64::new(0));
         let stealth = self.config.stealth.clone();
 
@@ -158,7 +157,8 @@ impl ClientTransport for VncTransport {
                 Ok(()) => match finished_worker {
                     FinishedWorker::Inbound => info!(
                         "[VNC] Tunnel closed: remote VNC server closed TCP connection (EOF / session limit reached). Duration: {:.1}s ({:.2} min)",
-                        duration, duration / 60.0
+                        duration,
+                        duration / 60.0
                     ),
                     FinishedWorker::TunnelInput => info!(
                         "[VNC] Tunnel closed: client TUN stream closed. Duration: {:.1}s",
@@ -243,7 +243,7 @@ async fn send_to_server(
     mut writer: tokio::io::WriteHalf<TcpStream>,
     cipher: Arc<anet_common::encryption::Cipher>,
     sequence: Arc<AtomicU64>,
-    nonce_prefix: [u8; 4],
+    nonce_prefix: Vec<u8>,
     stealth: anet_common::config::StealthConfig,
 ) -> Result<()> {
     let mut rng = StdRng::from_entropy();
@@ -303,8 +303,15 @@ async fn send_to_server(
                 pkt_count += 1;
                 let seq = sequence.fetch_add(1, Ordering::Relaxed);
                 let total_len = packet.len() + 38;
-                let padding = anet_common::padding_utils::calculate_padding_needed(total_len, stealth.padding_step);
-                let safe_padding = if total_len + usize::from(padding) > PADDING_MTU { 0 } else { padding };
+                let padding = anet_common::padding_utils::calculate_padding_needed(
+                    total_len,
+                    stealth.padding_step,
+                );
+                let safe_padding = if total_len + usize::from(padding) > PADDING_MTU {
+                    0
+                } else {
+                    padding
+                };
 
                 let encrypted = anet_common::transport::wrap_packet(
                     &cipher,
@@ -334,7 +341,10 @@ async fn send_to_server(
             if let Err(e) = writer.write_all(&batch_buf).await {
                 warn!(
                     "[VNC/Tx] TCP write failed on batch ({} bytes): {e:#}. Sent so far: {} packets, {} bytes in {:.1}s",
-                    batch_buf.len(), pkt_count, byte_count, start.elapsed().as_secs_f64()
+                    batch_buf.len(),
+                    pkt_count,
+                    byte_count,
+                    start.elapsed().as_secs_f64()
                 );
                 return Err(e.into());
             }
@@ -342,7 +352,9 @@ async fn send_to_server(
     }
     info!(
         "[VNC/Tx] Finished outbound stream. Total sent: {} packets, {} bytes in {:.1}s",
-        pkt_count, byte_count, start.elapsed().as_secs_f64()
+        pkt_count,
+        byte_count,
+        start.elapsed().as_secs_f64()
     );
     writer.shutdown().await?;
     Ok(())
@@ -382,7 +394,7 @@ fn schedule_with_jitter(
             }
             packet
         }
-            .boxed(),
+        .boxed(),
     );
 }
 
@@ -401,7 +413,8 @@ async fn receive_from_server(
         byte_count += encrypted.len() as u64;
         last_rx = std::time::Instant::now();
 
-        let packet = match anet_common::transport::unwrap_packet_bytes_in_place(&cipher, encrypted) {
+        let packet = match anet_common::transport::unwrap_packet_bytes_in_place(&cipher, encrypted)
+        {
             Ok(p) => p,
             Err(e) => {
                 warn!("[VNC/Rx] Failed to unwrap/decrypt frame #{pkt_count}: {e:#}");
@@ -413,7 +426,10 @@ async fn receive_from_server(
 
     info!(
         "[VNC/Rx] Server closed RFB connection (clean TCP EOF / FIN). Total received: {} frames, {} bytes in {:.1}s (last frame was {:.3}s ago)",
-        pkt_count, byte_count, start.elapsed().as_secs_f64(), last_rx.elapsed().as_secs_f64()
+        pkt_count,
+        byte_count,
+        start.elapsed().as_secs_f64(),
+        last_rx.elapsed().as_secs_f64()
     );
     tunnel_writer.shutdown().await?;
     Ok(())

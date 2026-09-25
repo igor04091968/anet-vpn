@@ -1,9 +1,11 @@
 use crate::config::CoreConfig;
-use crate::events::{status, warn, err as serr};
-use anet_common::consts::{MAX_PACKET_SIZE, NONCE_LEN, PROTO_PAD_FIELD_OVERHEAD};
+use crate::events::{err as serr, status, warn};
+use anet_common::consts::{MAX_PACKET_SIZE, PROTO_PAD_FIELD_OVERHEAD};
 use anet_common::crypto_utils::{self, derive_shared_key, generate_key_fingerprint, sign_data};
 use anet_common::encryption::Cipher;
-use anet_common::handshake_fragmentation::{FragmentConfig, send_fragmented_datagrams, write_fragmented};
+use anet_common::handshake_fragmentation::{
+    FragmentConfig, send_fragmented_datagrams, write_fragmented,
+};
 use anet_common::padding_utils::{calculate_padding_needed, generate_random_padding};
 use anet_common::protocol::{
     AuthRequest, AuthResponse, DhClientExchange, EncryptedAuthRequest, EncryptedAuthResponse,
@@ -17,7 +19,6 @@ use bytes::{BufMut, Bytes, BytesMut};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use log::{info, warn};
 use prost::Message;
-use rand::RngCore;
 use rand::rngs::OsRng;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -55,7 +56,7 @@ impl AuthChannel for UdpAuthChannel {
         send_fragmented_datagrams(&data, frag, |chunk| async move {
             self.socket.send_to(&chunk, self.target).await.map(|_| ())
         })
-            .await?;
+        .await?;
         Ok(())
     }
 
@@ -121,6 +122,7 @@ pub struct AuthHandler {
     padding_step: u16,
     frag_cfg: FragmentConfig,
     resume_session_id: Option<String>,
+    crypto_algorithm: anet_common::encryption::CryptoAlgorithm,
 }
 
 impl AuthHandler {
@@ -174,6 +176,7 @@ impl AuthHandler {
             padding_step: cfg.stealth.padding_step,
             frag_cfg: FragmentConfig::from_stealth(&cfg.stealth),
             resume_session_id,
+            crypto_algorithm: cfg.crypto.algorithm,
         })
     }
 
@@ -240,7 +243,9 @@ impl AuthHandler {
             padding: vec![],
         };
 
-        let current_wire_len = dh_init_msg.encoded_len() + NONCE_LEN + PROTO_PAD_FIELD_OVERHEAD;
+        let current_wire_len = dh_init_msg.encoded_len()
+            + self.crypto_algorithm.nonce_len()
+            + PROTO_PAD_FIELD_OVERHEAD;
         let needed = calculate_padding_needed(current_wire_len, self.padding_step);
         dh_init_msg.padding = generate_random_padding(needed);
 
@@ -267,14 +272,18 @@ impl AuthHandler {
         let mut request_data = Vec::new();
         message.encode(&mut request_data)?;
 
-        let cipher = crypto_utils::create_handshake_cipher(&self.server_pub_key_bytes);
+        let cipher = crypto_utils::create_handshake_cipher(
+            &self.server_pub_key_bytes,
+            self.crypto_algorithm,
+        )?;
 
-        let mut nonce = [0u8; NONCE_LEN];
-        OsRng.fill_bytes(&mut nonce);
+        let nonce = cipher.random_nonce();
 
         let ciphertext = cipher.encrypt(&nonce, Bytes::from(request_data))?;
 
-        let mut packet = BytesMut::with_capacity(NONCE_LEN + ciphertext.len());
+        let mut packet =
+            BytesMut::with_capacity(cipher.wire_marker_len() + nonce.len() + ciphertext.len());
+        packet.put_slice(cipher.wire_marker());
         packet.put_slice(&nonce);
         packet.put(ciphertext);
 
@@ -282,13 +291,18 @@ impl AuthHandler {
     }
 
     fn handle_phase_ii_response(&self, response_buf: &[u8]) -> Result<[u8; 32]> {
-        let cipher = crypto_utils::create_handshake_cipher(&self.server_pub_key_bytes);
+        let cipher = crypto_utils::create_handshake_cipher(
+            &self.server_pub_key_bytes,
+            self.crypto_algorithm,
+        )?;
 
-        if response_buf.len() < NONCE_LEN + 16 {
+        if response_buf.len() < cipher.wire_marker_len() + cipher.nonce_len() + cipher.tag_len()
+            || !response_buf.starts_with(cipher.wire_marker())
+        {
             return Err(anyhow::anyhow!("Response too short"));
         }
 
-        let (nonce, ciphertext) = response_buf.split_at(NONCE_LEN);
+        let (nonce, ciphertext) = cipher.split_frame(response_buf)?;
         let plaintext = cipher
             .decrypt(nonce, Bytes::copy_from_slice(ciphertext))
             .context("Failed to decrypt Phase II response")?;
@@ -306,8 +320,8 @@ impl AuthHandler {
             }
             _ => {
                 return Err(anyhow::anyhow!(
-                "Unexpected or invalid response in Phase II"
-            ));
+                    "Unexpected or invalid response in Phase II"
+                ));
             }
         };
 
@@ -316,7 +330,7 @@ impl AuthHandler {
             &server_pub_key_bytes,
             &server_signature,
         )
-            .context("Server signature verification failed")?;
+        .context("Server signature verification failed")?;
 
         let server_key_array: [u8; 32] = server_pub_key_bytes
             .as_slice()
@@ -336,9 +350,9 @@ impl AuthHandler {
     ) -> Result<(AuthResponse, [u8; 32])> {
         let (request_packet, cipher) = self.create_encrypted_auth_request(&shared_key)?;
         info!(
-        "[AUTH] Phase III: Sending Encrypted Auth Request ({} bytes).",
-        request_packet.len()
-    );
+            "[AUTH] Phase III: Sending Encrypted Auth Request ({} bytes).",
+            request_packet.len()
+        );
 
         channel
             .send(request_packet, &self.frag_cfg)
@@ -346,12 +360,20 @@ impl AuthHandler {
             .context("Failed Phase III send")?;
 
         let response_buf = channel.recv(Duration::from_secs(delay)).await?;
-        let handshake_cipher = crypto_utils::create_handshake_cipher(&self.server_pub_key_bytes);
+        let handshake_cipher = crypto_utils::create_handshake_cipher(
+            &self.server_pub_key_bytes,
+            self.crypto_algorithm,
+        )?;
 
-        if response_buf.len() < NONCE_LEN {
+        if response_buf.len()
+            < handshake_cipher.wire_marker_len()
+                + handshake_cipher.nonce_len()
+                + handshake_cipher.tag_len()
+            || !response_buf.starts_with(handshake_cipher.wire_marker())
+        {
             return Err(anyhow::anyhow!("Short response"));
         }
-        let (nonce, ciphertext) = response_buf.split_at(NONCE_LEN);
+        let (nonce, ciphertext) = handshake_cipher.split_frame(&response_buf)?;
 
         let plaintext_outer = handshake_cipher
             .decrypt(nonce, Bytes::copy_from_slice(ciphertext))
@@ -391,9 +413,8 @@ impl AuthHandler {
         let mut raw_auth_request = Vec::new();
         auth_payload.encode(&mut raw_auth_request)?;
 
-        let req_cipher = Cipher::new(shared_key);
-        let mut nonce_bytes = [0u8; NONCE_LEN];
-        OsRng.fill_bytes(&mut nonce_bytes);
+        let req_cipher = Cipher::with_algorithm(shared_key, self.crypto_algorithm)?;
+        let nonce_bytes = req_cipher.random_nonce();
         let ciphertext = req_cipher.encrypt(&nonce_bytes, Bytes::from(raw_auth_request))?;
 
         let encrypted_req = EncryptedAuthRequest {
@@ -405,21 +426,26 @@ impl AuthHandler {
             padding: vec![],
         };
 
-        let outer_len = wrapped_msg.encoded_len() + NONCE_LEN + PROTO_PAD_FIELD_OVERHEAD;
+        let handshake_cipher = crypto_utils::create_handshake_cipher(
+            &self.server_pub_key_bytes,
+            self.crypto_algorithm,
+        )?;
+        let outer_len =
+            wrapped_msg.encoded_len() + handshake_cipher.nonce_len() + PROTO_PAD_FIELD_OVERHEAD;
         let needed = calculate_padding_needed(outer_len, self.padding_step);
         wrapped_msg.padding = generate_random_padding(needed);
-
-        let handshake_cipher = crypto_utils::create_handshake_cipher(&self.server_pub_key_bytes);
 
         let mut raw_wrapped = Vec::new();
         wrapped_msg.encode(&mut raw_wrapped)?;
 
-        let mut obf_nonce = [0u8; NONCE_LEN];
-        OsRng.fill_bytes(&mut obf_nonce);
+        let obf_nonce = handshake_cipher.random_nonce();
 
         let obf_ciphertext = handshake_cipher.encrypt(&obf_nonce, Bytes::from(raw_wrapped))?;
 
-        let mut final_packet = BytesMut::with_capacity(NONCE_LEN + obf_ciphertext.len());
+        let mut final_packet = BytesMut::with_capacity(
+            handshake_cipher.wire_marker_len() + obf_nonce.len() + obf_ciphertext.len(),
+        );
+        final_packet.put_slice(handshake_cipher.wire_marker());
         final_packet.put_slice(&obf_nonce);
         final_packet.put(obf_ciphertext);
 
@@ -431,7 +457,7 @@ impl AuthHandler {
         enc_res: EncryptedAuthResponse,
         req_cipher: &Cipher,
     ) -> Result<AuthResponse> {
-        if enc_res.nonce.len() != NONCE_LEN {
+        if enc_res.nonce.len() != req_cipher.nonce_len() {
             return Err(anyhow::anyhow!("Invalid nonce length"));
         }
 

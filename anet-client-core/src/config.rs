@@ -1,4 +1,5 @@
 use anet_common::config::StealthConfig;
+use anet_common::encryption::CryptoAlgorithm;
 use anet_common::quic_settings::QuicConfig;
 use serde::Deserialize;
 
@@ -117,6 +118,20 @@ pub struct TransportConfig {
     pub ssh_user: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct CryptoConfig {
+    pub algorithm: CryptoAlgorithm,
+}
+
+impl Default for CryptoConfig {
+    fn default() -> Self {
+        Self {
+            algorithm: CryptoAlgorithm::ChaCha20Poly1305,
+        }
+    }
+}
+
 impl Default for TransportConfig {
     fn default() -> Self {
         Self {
@@ -211,13 +226,19 @@ impl ServerConfig {
 
     pub fn websocket_url(&self) -> anyhow::Result<String> {
         let mode = self.mode()?;
-        anyhow::ensure!(mode == TransportMode::Websocket, "DSN '{}' is not a websocket endpoint", self.dsn);
+        anyhow::ensure!(
+            mode == TransportMode::Websocket,
+            "DSN '{}' is not a websocket endpoint",
+            self.dsn
+        );
         Ok(self.dsn.clone())
     }
 
     pub fn host_port(&self) -> anyhow::Result<(String, u16)> {
         let uri: http::Uri = self.dsn.parse()?;
-        let host = uri.host().ok_or_else(|| anyhow::anyhow!("server DSN '{}' has no host", self.dsn))?;
+        let host = uri
+            .host()
+            .ok_or_else(|| anyhow::anyhow!("server DSN '{}' has no host", self.dsn))?;
 
         let scheme = uri.scheme_str().unwrap_or("").to_lowercase();
         let port = uri.port_u16().unwrap_or(match scheme.as_str() {
@@ -228,7 +249,11 @@ impl ServerConfig {
             "quic" => 443,
             _ => 0,
         });
-        anyhow::ensure!(port != 0, "server DSN '{}' has no port and unknown scheme", self.dsn);
+        anyhow::ensure!(
+            port != 0,
+            "server DSN '{}' has no port and unknown scheme",
+            self.dsn
+        );
         Ok((host.to_string(), port))
     }
 
@@ -236,7 +261,10 @@ impl ServerConfig {
     /// Если имя не указано в TOML — генерируем его на лету из DSN.
     pub fn get_name(&self) -> String {
         self.name.clone().unwrap_or_else(|| {
-            let host = self.host_port().map(|(host, _)| host).unwrap_or_else(|_| self.dsn.clone());
+            let host = self
+                .host_port()
+                .map(|(host, _)| host)
+                .unwrap_or_else(|_| self.dsn.clone());
             let mode_str = match self.mode().unwrap_or(TransportMode::Quic) {
                 TransportMode::Quic => "QUIC",
                 TransportMode::Ssh => "SSH",
@@ -254,8 +282,12 @@ fn default_timeout_secs() -> u64 {
     10
 }
 
-fn default_websocket_min_session_secs() -> u64 { 8 * 60 }
-fn default_websocket_max_session_secs() -> u64 { 25 * 60 }
+fn default_websocket_min_session_secs() -> u64 {
+    8 * 60
+}
+fn default_websocket_max_session_secs() -> u64 {
+    25 * 60
+}
 
 fn deserialize_weight<'de, D>(deserializer: D) -> Result<Option<i32>, D::Error>
 where
@@ -287,7 +319,10 @@ where
             Ok(None)
         }
 
-        fn visit_some<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        fn visit_some<D: serde::Deserializer<'de>>(
+            self,
+            deserializer: D,
+        ) -> Result<Self::Value, D::Error> {
             deserializer.deserialize_any(WeightVisitor)
         }
     }
@@ -370,6 +405,10 @@ pub struct CoreConfig {
 
     #[serde(default)]
     pub ahttp: AhttpConfig,
+
+    /// AEAD used for ANet's authenticated handshake and outer packet envelope.
+    #[serde(default)]
+    pub crypto: CryptoConfig,
 }
 
 impl CoreConfig {
@@ -400,7 +439,7 @@ impl CoreConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{ServerConfig, TransportMode};
+    use super::{CoreConfig, ServerConfig, TransportMode};
     use serde::Deserialize;
 
     #[test]
@@ -426,7 +465,10 @@ mod tests {
             ..server.clone()
         };
         assert_eq!(websocket.mode().unwrap(), TransportMode::Websocket);
-        assert_eq!(websocket.websocket_url().unwrap(), "wss://vpn.example.com:8443/socket");
+        assert_eq!(
+            websocket.websocket_url().unwrap(),
+            "wss://vpn.example.com:8443/socket"
+        );
 
         // Тест дефолтного порта
         let ws_no_port = ServerConfig {
@@ -445,7 +487,6 @@ mod tests {
             websocket_max_session_secs: 1500,
         };
         assert_eq!(ws_no_port.endpoint().unwrap(), "gm1.anet-project.org:443");
-
     }
 
     #[test]
@@ -477,6 +518,20 @@ mod tests {
         assert_eq!(cfg.servers[0].group_name.as_deref(), Some("Group A"));
         assert_eq!(cfg.servers[0].weight(), 50);
         assert_eq!(cfg.servers[1].weight(), 100);
+    }
 
+    #[test]
+    fn crypto_algorithm_is_selectable_and_defaults_to_chacha() {
+        let legacy: CoreConfig = toml::from_str("").unwrap();
+        assert_eq!(
+            legacy.crypto.algorithm,
+            anet_common::encryption::CryptoAlgorithm::ChaCha20Poly1305
+        );
+
+        let gost: CoreConfig = toml::from_str("[crypto]\nalgorithm = 'kuznyechik-mgm'\n").unwrap();
+        assert_eq!(
+            gost.crypto.algorithm,
+            anet_common::encryption::CryptoAlgorithm::KuznyechikMgm
+        );
     }
 }

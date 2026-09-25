@@ -1,17 +1,17 @@
 use crate::auth_provider::AuthProvider;
 use crate::ip_pool::IpPool;
 use crate::multikey_udp_socket::StreamSender;
+use anet_common::dto::{BillingType, TrafficUsageSample};
 use anet_common::encryption::Cipher;
-use anet_common::dto::{TrafficUsageSample, BillingType};
 use arc_swap::{ArcSwap, ArcSwapOption};
 use bytes::Bytes;
 use dashmap::DashMap;
 use log::{info, warn};
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
+use std::time::{Duration, Instant};
 
 fn current_timestamp_secs() -> u64 {
     SystemTime::now()
@@ -25,7 +25,7 @@ pub struct ClientTransportInfo {
     pub sequence: Arc<AtomicU64>,
     pub assigned_ip: String,
     pub session_id: String,
-    pub nonce_prefix: [u8; 4],
+    pub nonce_prefix: Vec<u8>,
     pub remote_addr: ArcSwap<SocketAddr>,
     pub fingerprint: String,
     pub user_id: Option<String>,
@@ -46,7 +46,6 @@ pub struct ClientTransportInfo {
 
     /// Метка времени последней активности для сторожевого таймера
     pub last_activity: Arc<AtomicU64>,
-
 }
 
 struct TrafficCounters {
@@ -82,7 +81,7 @@ mod tests {
             sequence: Arc::new(AtomicU64::new(0)),
             assigned_ip: "10.0.0.3".to_string(),
             session_id: session_id.to_string(),
-            nonce_prefix: [1, 2, 3, 4],
+            nonce_prefix: vec![1, 2, 3, 4],
             remote_addr: ArcSwap::new(Arc::new("127.0.0.1:12345".parse().unwrap())),
             fingerprint: fingerprint.to_string(),
             user_id: None,
@@ -105,7 +104,7 @@ mod tests {
         let client = client("session-1", "fingerprint-1");
         let (router, _receiver) = mpsc::channel(1);
         registry.pre_register_client(client.clone());
-        registry.finalize_client(&client.assigned_ip, router);
+        registry.finalize_client(&client, router);
         registry.suspend_client(client);
 
         assert!(!registry.can_resume("session-1", "somebody-else"));
@@ -138,7 +137,7 @@ mod tests {
         let client = client("session-traffic", "fingerprint-traffic");
         let (router, mut receiver) = mpsc::channel(1);
         registry.pre_register_client(client.clone());
-        registry.finalize_client(&client.assigned_ip, router);
+        registry.finalize_client(&client, router);
 
         registry.record_rx(&client, 120, "quic");
         registry
@@ -151,6 +150,26 @@ mod tests {
         assert_eq!(snapshot[0].rx_bytes, 120);
         assert_eq!(snapshot[0].tx_bytes, 80);
     }
+
+    #[tokio::test]
+    async fn stale_session_cannot_finalize_or_remove_replacement() {
+        let registry = registry();
+        let old = client("old", "old-fingerprint");
+        let replacement = client("new", "new-fingerprint");
+        registry.pre_register_client(old.clone());
+        registry.pre_register_client(replacement.clone());
+        let (sender, _receiver) = mpsc::channel(1);
+        assert!(!registry.finalize_client(&old, sender));
+        registry.remove_client(&old).await;
+        assert!(registry.is_current(&replacement));
+        assert_eq!(
+            registry
+                .get_by_addr(&"127.0.0.1:12345".parse().unwrap())
+                .unwrap()
+                .session_id,
+            "new"
+        );
+    }
 }
 
 struct SuspendedSession {
@@ -162,7 +181,8 @@ const RESUME_WINDOW: Duration = Duration::from_secs(45);
 
 #[derive(Clone)]
 pub struct ClientRegistry {
-    clients_by_prefix: Arc<DashMap<[u8; 4], Arc<ClientTransportInfo>>>,
+    mutations: Arc<Mutex<()>>,
+    clients_by_prefix: Arc<DashMap<Vec<u8>, Arc<ClientTransportInfo>>>,
     clients_by_addr: Arc<DashMap<SocketAddr, Arc<ClientTransportInfo>>>,
     clients_by_ip: Arc<DashMap<String, Arc<ClientTransportInfo>>>,
     quic_router: Arc<DashMap<String, StreamSender>>,
@@ -185,6 +205,7 @@ pub struct ClientRegistry {
 impl ClientRegistry {
     pub fn new(ip_pool: IpPool, auth_provider: Arc<AuthProvider>) -> Self {
         Self {
+            mutations: Arc::new(Mutex::new(())),
             clients_by_prefix: Arc::new(DashMap::new()),
             clients_by_addr: Arc::new(DashMap::new()),
             clients_by_ip: Arc::new(DashMap::new()),
@@ -257,12 +278,19 @@ impl ClientRegistry {
     pub fn set_accepting_connections(&self, accepting: bool) {
         // Admission влияет только на новые handshake; уже установленные
         // логические сессии продолжают работать и могут быть resumed.
-        self.accepting_connections.store(accepting, Ordering::Release);
+        self.accepting_connections
+            .store(accepting, Ordering::Release);
         info!("[ControlPlane] accepting_connections={accepting}");
     }
 
+    pub fn touch_activity(&self, client: &ClientTransportInfo) {
+        client
+            .last_activity
+            .store(current_timestamp_secs(), Ordering::Relaxed);
+    }
+
     pub fn record_rx(&self, client: &ClientTransportInfo, bytes: usize, protocol: &str) {
-        client.last_activity.store(current_timestamp_secs(), Ordering::Relaxed);
+        self.touch_activity(client);
         self.traffic_counters(client, protocol)
             .rx_bytes
             .fetch_add(bytes as u64, Ordering::Relaxed);
@@ -271,7 +299,8 @@ impl ClientRegistry {
     /// Проверяет и выселяет сессии, от которых не было входящих пакетов дольше timeout_secs
     pub async fn cleanup_inactive_clients(&self, timeout_secs: u64) {
         let now = current_timestamp_secs();
-        let dead_clients: Vec<Arc<ClientTransportInfo>> = self.clients_by_ip
+        let dead_clients: Vec<Arc<ClientTransportInfo>> = self
+            .clients_by_ip
             .iter()
             .filter(|entry| {
                 let last = entry.value().last_activity.load(Ordering::Relaxed);
@@ -281,6 +310,12 @@ impl ClientRegistry {
             .collect();
 
         for client in dead_clients {
+            // Activity may have arrived after the snapshot was built.
+            if current_timestamp_secs().saturating_sub(client.last_activity.load(Ordering::Relaxed))
+                <= timeout_secs
+            {
+                continue;
+            }
             info!(
                 "[Registry] Client {} (FP: {}, proto: {}) inactive for >{}s. Evicting dead session.",
                 client.assigned_ip, client.fingerprint, client.protocol, timeout_secs
@@ -290,7 +325,8 @@ impl ClientRegistry {
     }
 
     pub fn traffic_snapshot(&self) -> Vec<TrafficUsageSample> {
-        let active_sessions: std::collections::HashSet<String> = self.clients_by_prefix
+        let active_sessions: std::collections::HashSet<String> = self
+            .clients_by_prefix
             .iter()
             .map(|entry| format!("{}#{}", entry.value().fingerprint, entry.value().protocol))
             .collect();
@@ -311,35 +347,52 @@ impl ClientRegistry {
             .collect()
     }
 
-    fn traffic_counters(&self, client: &ClientTransportInfo, protocol: &str) -> Arc<TrafficCounters> {
+    fn traffic_counters(
+        &self,
+        client: &ClientTransportInfo,
+        protocol: &str,
+    ) -> Arc<TrafficCounters> {
         let key = format!("{}#{}", client.fingerprint, protocol);
         self.traffic_totals
             .entry(key)
-            .or_insert_with(|| Arc::new(TrafficCounters {
-                user_id: client.user_id.clone(),
-                fingerprint: client.fingerprint.clone(),
-                protocol: protocol.to_string(),
-                rx_bytes: AtomicU64::new(0),
-                tx_bytes: AtomicU64::new(0),
-            }))
+            .or_insert_with(|| {
+                Arc::new(TrafficCounters {
+                    user_id: client.user_id.clone(),
+                    fingerprint: client.fingerprint.clone(),
+                    protocol: protocol.to_string(),
+                    rx_bytes: AtomicU64::new(0),
+                    tx_bytes: AtomicU64::new(0),
+                })
+            })
             .clone()
     }
 
     pub fn pre_register_client(&self, client_info: Arc<ClientTransportInfo>) {
+        let _mutation = self.mutations.lock().unwrap();
         let remote_addr = **client_info.remote_addr.load();
         info!(
             "[Registry] Pre-registered client {} for address {}",
             client_info.assigned_ip, remote_addr
         );
         self.clients_by_prefix
-            .insert(client_info.nonce_prefix, client_info.clone());
-        self.clients_by_addr.insert(remote_addr, client_info.clone());
+            .insert(client_info.nonce_prefix.clone(), client_info.clone());
+        self.clients_by_addr
+            .insert(remote_addr, client_info.clone());
         self.clients_by_ip
             .insert(client_info.assigned_ip.clone(), client_info.clone());
         self.apply_shaper_limit(&client_info);
     }
 
-    pub fn finalize_client(&self, client_ip: &str, router_sender: StreamSender) {
+    pub fn finalize_client(
+        &self,
+        client: &ClientTransportInfo,
+        router_sender: StreamSender,
+    ) -> bool {
+        let _mutation = self.mutations.lock().unwrap();
+        if !self.is_current(client) {
+            return false;
+        }
+        let client_ip = &client.assigned_ip;
         self.quic_router
             .insert(client_ip.to_string(), router_sender);
         info!(
@@ -347,25 +400,51 @@ impl ClientRegistry {
             client_ip,
             self.quic_router.len()
         );
+        true
+    }
+
+    fn is_current(&self, client: &ClientTransportInfo) -> bool {
+        self.clients_by_ip
+            .get(&client.assigned_ip)
+            .is_some_and(|entry| std::ptr::eq(entry.value().as_ref(), client))
     }
 
     pub async fn remove_client(&self, client_info: &ClientTransportInfo) {
-        let client_ip = &client_info.assigned_ip;
-        let remote_addr = **client_info.remote_addr.load();
+        {
+            let _mutation = self.mutations.lock().unwrap();
+            // Old transport tasks may finish after a replacement reuses the IP.
+            if !self.is_current(client_info) {
+                return;
+            }
+            let client_ip = &client_info.assigned_ip;
+            let remote_addr = **client_info.remote_addr.load();
 
-        self.quic_router.remove(client_ip);
-        self.clients_by_prefix.remove(&client_info.nonce_prefix);
-        self.clients_by_addr.remove(&remote_addr);
-        self.clients_by_ip.remove(client_ip);
-        self.clear_shaper_limit(client_ip);
+            self.quic_router.remove(client_ip);
+            if self
+                .clients_by_prefix
+                .get(&client_info.nonce_prefix)
+                .is_some_and(|entry| std::ptr::eq(entry.value().as_ref(), client_info))
+            {
+                self.clients_by_prefix.remove(&client_info.nonce_prefix);
+            }
+            if self
+                .clients_by_addr
+                .get(&remote_addr)
+                .is_some_and(|entry| std::ptr::eq(entry.value().as_ref(), client_info))
+            {
+                self.clients_by_addr.remove(&remote_addr);
+            }
+            self.clients_by_ip.remove(client_ip);
+            self.clear_shaper_limit(client_ip);
 
-        // Очищаем локальные счетчики трафика отключенной сессии во избежание утечки памяти
-        let key = format!("{}#{}", client_info.fingerprint, client_info.protocol);
-        self.traffic_totals.remove(&key);
+            // Очищаем локальные счетчики трафика отключенной сессии во избежание утечки памяти
+            let key = format!("{}#{}", client_info.fingerprint, client_info.protocol);
+            self.traffic_totals.remove(&key);
 
-        if let Ok(ip_addr) = client_ip.parse::<Ipv4Addr>() {
-            self.ip_pool.release(ip_addr);
-        }
+            if let Ok(ip_addr) = client_ip.parse::<Ipv4Addr>() {
+                self.ip_pool.release(ip_addr);
+            }
+        } // release mutation lock before calling the external auth service
 
         // dec sessions
         let ap = self.auth_provider.clone();
@@ -373,17 +452,31 @@ impl ClientRegistry {
 
         ap.report_session_stop(fp).await;
 
-
-        info!("[Registry] Client {} removed.", client_ip);
+        info!("[Registry] Client {} removed.", client_info.assigned_ip);
     }
 
-
     pub fn suspend_client(&self, client_info: Arc<ClientTransportInfo>) {
+        let _mutation = self.mutations.lock().unwrap();
+        if !self.is_current(&client_info) {
+            return;
+        }
         let client_ip = client_info.assigned_ip.clone();
         let remote_addr = **client_info.remote_addr.load();
         self.quic_router.remove(&client_ip);
-        self.clients_by_prefix.remove(&client_info.nonce_prefix);
-        self.clients_by_addr.remove(&remote_addr);
+        if self
+            .clients_by_prefix
+            .get(&client_info.nonce_prefix)
+            .is_some_and(|entry| std::ptr::eq(entry.value().as_ref(), client_info.as_ref()))
+        {
+            self.clients_by_prefix.remove(&client_info.nonce_prefix);
+        }
+        if self
+            .clients_by_addr
+            .get(&remote_addr)
+            .is_some_and(|entry| std::ptr::eq(entry.value().as_ref(), client_info.as_ref()))
+        {
+            self.clients_by_addr.remove(&remote_addr);
+        }
         self.clients_by_ip.remove(&client_ip);
         // ПРИМЕЧАНИЕ: лимит скорости намеренно НЕ снимается — плановая
         // ротация WS-сессии ожидаемо резюмируется на том же assigned_ip, и
@@ -476,28 +569,46 @@ impl ClientRegistry {
             .map(|entry| entry.value().clone())
     }
 
-    pub fn get_by_prefix(&self, nonce_prefix: &[u8; 4]) -> Option<Arc<ClientTransportInfo>> {
+    pub fn get_by_prefix(&self, nonce_prefix: &[u8]) -> Option<Arc<ClientTransportInfo>> {
         self.clients_by_prefix
             .get(nonce_prefix)
             .map(|entry| entry.value().clone())
     }
 
     pub fn update_client_addr(&self, client_info: &Arc<ClientTransportInfo>, new_addr: SocketAddr) {
+        let _mutation = self.mutations.lock().unwrap();
+        if !self.is_current(client_info) {
+            return;
+        }
         // NAT rebinding is rare. Keep the common path read-only and allocation-free instead of
         // swapping a new Arc for every received QUIC datagram.
         if **client_info.remote_addr.load() == new_addr {
             return;
         }
 
-        let old_addr_arc = client_info.remote_addr.swap(Arc::new(new_addr));
-        let old_addr = *old_addr_arc;
+        if self
+            .clients_by_addr
+            .get(&new_addr)
+            .is_some_and(|entry| !std::ptr::eq(entry.value().as_ref(), client_info.as_ref()))
+        {
+            warn!("[Registry] Ignoring address roam to occupied address {new_addr}");
+            return;
+        }
+
+        let old_addr = **client_info.remote_addr.load();
 
         if old_addr == new_addr {
             return;
         }
 
-        if let Some((_, client)) = self.clients_by_addr.remove(&old_addr) {
-            self.clients_by_addr.insert(new_addr, client);
+        if self
+            .clients_by_addr
+            .get(&old_addr)
+            .is_some_and(|entry| std::ptr::eq(entry.value().as_ref(), client_info.as_ref()))
+        {
+            self.clients_by_addr.remove(&old_addr);
+            self.clients_by_addr.insert(new_addr, client_info.clone());
+            client_info.remote_addr.store(Arc::new(new_addr));
             info!(
                 "[Registry] Client {} roamed from {} to {}",
                 client_info.assigned_ip, old_addr, new_addr
@@ -506,10 +617,17 @@ impl ClientRegistry {
     }
 
     pub async fn route_packet_to_client(&self, dst_ip: &str, packet: Bytes) {
-        if let Some(sender) = self.quic_router.get(dst_ip) {
+        let sender = self
+            .quic_router
+            .get(dst_ip)
+            .map(|entry| entry.value().clone());
+        if let Some(sender) = sender {
             let packet_len = packet.len();
-            if sender.send(packet).await.is_err() {
-                warn!("[Registry] Failed to route to {}: channel closed.", dst_ip);
+            if sender.try_send(packet).is_err() {
+                warn!(
+                    "[Registry] Failed to route to {}: queue full or closed.",
+                    dst_ip
+                );
             } else if let Some(client) = self.clients_by_ip.get(dst_ip) {
                 // Извлекаем сохраненный протокол сессии из транспортной структуры
                 self.traffic_counters(&client, &client.protocol)

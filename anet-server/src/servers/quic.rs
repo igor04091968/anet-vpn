@@ -36,7 +36,8 @@ fn build_quinn_config(cfg: &Config) -> Result<QuinnServerConfig> {
     let mut s_cfg = QuinnServerConfig::with_crypto(Arc::new(
         quinn::crypto::rustls::QuicServerConfig::try_from(server_crypto)?,
     ));
-    let t_cfg = build_transport_config(&cfg.quic_transport, cfg.network.mtu)?;
+    let envelope_overhead = cfg.crypto.algorithm.envelope_overhead();
+    let t_cfg = build_transport_config(&cfg.quic_transport, cfg.network.mtu, envelope_overhead)?;
     s_cfg.transport_config(Arc::new(t_cfg));
     Ok(s_cfg)
 }
@@ -51,7 +52,10 @@ async fn serve_udp_auth_layer(
         let handler = auth_core.clone();
         let s = socket.clone();
         tokio::spawn(async move {
-            match handler.process_handshake_packet(packet, remote_addr, "quic").await {
+            match handler
+                .process_handshake_packet(packet, remote_addr, "quic")
+                .await
+            {
                 Ok((Some(resp), _)) => {
                     let _ = s.send_to(&resp, remote_addr).await;
                 }
@@ -82,6 +86,7 @@ pub async fn run_quic_server(
         registry.clone(),
         tx_auth,
         config.stealth.clone(),
+        config.crypto.algorithm,
     ));
 
     // Стартуем асинхронную ловушку DH Хендшейка UDP (Только для этого сокета)
@@ -94,7 +99,7 @@ pub async fn run_quic_server(
     info!("Starting ASTP[Crypted QUIC] Proxy Layer on {}", bind_to);
     let mut ep_config = EndpointConfig::default();
     // Увеличиваем батчинг UDP-пакетов (sendmmsg/recvmmsg)
-    let _ =ep_config.max_udp_payload_size(PADDING_MTU as u16);
+    let _ = ep_config.max_udp_payload_size(PADDING_MTU as u16);
 
     let endpoint = Endpoint::new_with_abstract_socket(
         ep_config,
@@ -127,7 +132,10 @@ pub async fn run_quic_server(
 
             if let Ok((send, mut recv)) = conn.accept_bi().await {
                 let (tx_router, rx_router) = mpsc::channel::<Bytes>(CHANNEL_BUFFER_SIZE);
-                r.finalize_client(&client_ip, tx_router);
+                if !r.finalize_client(&client_info, tx_router) {
+                    conn.close(0u32.into(), b"superseded session");
+                    return;
+                }
 
                 let stealth_c = c.stealth.clone();
 
@@ -155,7 +163,10 @@ pub async fn run_quic_server(
                                 rx_registry.record_rx(&ci_rx, packet_len, "quic");
                             }
                             Err(mpsc::error::TrySendError::Full(_)) => {
-                                warn!("[QUIC] TUN queue full, dropping uplink packet from {}", ci_rx.assigned_ip);
+                                warn!(
+                                    "[QUIC] TUN queue full, dropping uplink packet from {}",
+                                    ci_rx.assigned_ip
+                                );
                             }
                             Err(mpsc::error::TrySendError::Closed(_)) => {
                                 break;

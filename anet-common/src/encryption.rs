@@ -1,119 +1,253 @@
-use aead::{Aead, AeadInPlace, KeyInit, Nonce, Tag}; // <--- Добавили AeadInPlace
-use aes_gcm::Key;
-// use aes_gcm::Aes256Gcm;
+use aead::{Aead, AeadInPlace, KeyInit, Nonce, Tag};
 use bytes::Bytes;
 use chacha20poly1305::ChaCha20Poly1305;
-use std::sync::Arc;
+use kuznyechik::Kuznyechik;
+use mgm::aead::{Aead as GostAead, AeadInPlace as GostAeadInPlace, NewAead};
+use rand::RngCore;
+use serde::Deserialize;
+use std::{str::FromStr, sync::Arc};
 
-// Заменить на `ChaCha20Poly1305` / `Aes256Gcm` при необходимости.
-type CryptoAlgorithm = ChaCha20Poly1305;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Default)]
+pub enum CryptoAlgorithm {
+    #[default]
+    #[serde(rename = "chacha20-poly1305")]
+    ChaCha20Poly1305,
+    #[serde(rename = "kuznyechik-mgm")]
+    KuznyechikMgm,
+}
+
+impl CryptoAlgorithm {
+    pub const fn wire_marker(self) -> &'static [u8] {
+        match self {
+            Self::ChaCha20Poly1305 => b"",
+            Self::KuznyechikMgm => b"ANETGOST1",
+        }
+    }
+
+    pub const fn nonce_len(self) -> usize {
+        match self {
+            Self::ChaCha20Poly1305 => 12,
+            Self::KuznyechikMgm => 16,
+        }
+    }
+    pub const fn tag_len(self) -> usize {
+        16
+    }
+    pub const fn nonce_prefix_len(self) -> usize {
+        self.nonce_len() - 8
+    }
+
+    pub const fn envelope_overhead(self) -> usize {
+        self.wire_marker().len() + self.nonce_len() + self.tag_len() + 10
+    }
+}
+
+impl FromStr for CryptoAlgorithm {
+    type Err = String;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "chacha20-poly1305" => Ok(Self::ChaCha20Poly1305),
+            "kuznyechik-mgm" => Ok(Self::KuznyechikMgm),
+            other => Err(format!("unsupported crypto algorithm: {other}")),
+        }
+    }
+}
+
+#[derive(Clone)]
+enum CipherInner {
+    ChaCha(ChaCha20Poly1305),
+    KuznyechikMgm(mgm::Mgm<Kuznyechik>),
+}
 
 #[derive(Clone)]
 pub struct Cipher {
-    cipher: Arc<CryptoAlgorithm>,
+    cipher: Arc<CipherInner>,
+    algorithm: CryptoAlgorithm,
 }
 
 impl Cipher {
     pub fn new(key: &[u8]) -> Self {
+        Self::with_algorithm(key, CryptoAlgorithm::ChaCha20Poly1305)
+            .expect("valid 32-byte cipher key")
+    }
+
+    pub fn with_algorithm(key: &[u8], algorithm: CryptoAlgorithm) -> Result<Self, EncryptionError> {
         if key.len() != 32 {
-            panic!("Invalid key length for AES-256-GCM. Must be 32 bytes.");
+            return Err(EncryptionError::InvalidKeyLength);
         }
+        let cipher = match algorithm {
+            CryptoAlgorithm::ChaCha20Poly1305 => CipherInner::ChaCha(
+                ChaCha20Poly1305::new_from_slice(key)
+                    .map_err(|_| EncryptionError::InvalidKeyLength)?,
+            ),
+            CryptoAlgorithm::KuznyechikMgm => {
+                let key = mgm::aead::generic_array::GenericArray::from_slice(key);
+                CipherInner::KuznyechikMgm(mgm::Mgm::<Kuznyechik>::new(key))
+            }
+        };
+        Ok(Self {
+            cipher: Arc::new(cipher),
+            algorithm,
+        })
+    }
 
-        let key_generic: &Key<CryptoAlgorithm> = key.try_into().expect("Key must be 32 bytes");
+    pub const fn algorithm(&self) -> CryptoAlgorithm {
+        self.algorithm
+    }
+    pub const fn nonce_len(&self) -> usize {
+        self.algorithm.nonce_len()
+    }
+    pub const fn tag_len(&self) -> usize {
+        self.algorithm.tag_len()
+    }
+    pub const fn nonce_prefix_len(&self) -> usize {
+        self.algorithm.nonce_prefix_len()
+    }
+    pub const fn wire_marker(&self) -> &'static [u8] {
+        self.algorithm.wire_marker()
+    }
+    pub const fn wire_marker_len(&self) -> usize {
+        self.algorithm.wire_marker().len()
+    }
+    pub const fn envelope_overhead(&self) -> usize {
+        self.algorithm.envelope_overhead()
+    }
 
-        Self {
-            cipher: Arc::new(CryptoAlgorithm::new(key_generic)),
+    pub fn split_frame<'a>(
+        &self,
+        packet: &'a [u8],
+    ) -> Result<(&'a [u8], &'a [u8]), EncryptionError> {
+        let marker = self.wire_marker();
+        if packet.len() < marker.len() + self.nonce_len() + self.tag_len()
+            || !packet.starts_with(marker)
+        {
+            return Err(EncryptionError::InvalidPacketHeader);
+        }
+        let body = &packet[marker.len()..];
+        Ok(body.split_at(self.nonce_len()))
+    }
+
+    pub fn random_nonce(&self) -> Vec<u8> {
+        let mut nonce = vec![0; self.nonce_len()];
+        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        if self.algorithm == CryptoAlgorithm::KuznyechikMgm {
+            nonce[0] &= 0x7f;
+        }
+        nonce
+    }
+
+    pub fn encrypt(&self, nonce: &[u8], data: Bytes) -> Result<Bytes, EncryptionError> {
+        if nonce.len() != self.nonce_len() {
+            return Err(EncryptionError::InvalidNonceLength);
+        }
+        match self.cipher.as_ref() {
+            CipherInner::ChaCha(c) => c
+                .encrypt(Nonce::<ChaCha20Poly1305>::from_slice(nonce), data.as_ref())
+                .map(Bytes::from)
+                .map_err(|_| EncryptionError::EncryptionFailed),
+            CipherInner::KuznyechikMgm(c) => {
+                let n = mgm::Nonce::<mgm::aead::consts::U16>::from_slice(nonce);
+                c.encrypt(n, data.as_ref())
+                    .map(Bytes::from)
+                    .map_err(|_| EncryptionError::EncryptionFailed)
+            }
         }
     }
 
-    #[inline]
-    pub fn encrypt(&self, nonce_bytes: &[u8], data: Bytes) -> Result<Bytes, EncryptionError> {
-        let nonce = Nonce::<CryptoAlgorithm>::from_slice(nonce_bytes);
-
-        let ciphertext = self
-            .cipher
-            .encrypt(nonce, data.as_ref())
-            .map_err(|_| EncryptionError::EncryptionFailed)?;
-
-        Ok(Bytes::from(ciphertext))
+    pub fn decrypt(&self, nonce: &[u8], data: Bytes) -> Result<Bytes, EncryptionError> {
+        if nonce.len() != self.nonce_len() {
+            return Err(EncryptionError::InvalidNonceLength);
+        }
+        match self.cipher.as_ref() {
+            CipherInner::ChaCha(c) => c
+                .decrypt(Nonce::<ChaCha20Poly1305>::from_slice(nonce), data.as_ref())
+                .map(Bytes::from)
+                .map_err(|_| EncryptionError::DecryptionFailed),
+            CipherInner::KuznyechikMgm(c) => {
+                let n = mgm::Nonce::<mgm::aead::consts::U16>::from_slice(nonce);
+                c.decrypt(n, data.as_ref())
+                    .map(Bytes::from)
+                    .map_err(|_| EncryptionError::DecryptionFailed)
+            }
+        }
     }
 
-    #[inline]
-    pub fn decrypt(&self, nonce_bytes: &[u8], data: Bytes) -> Result<Bytes, EncryptionError> {
-        let nonce = Nonce::<CryptoAlgorithm>::from_slice(nonce_bytes);
-
-        let plaintext = self
-            .cipher
-            .decrypt(nonce, data.as_ref())
-            .map_err(|_| EncryptionError::DecryptionFailed)?;
-
-        Ok(Bytes::from(plaintext))
-    }
-
-    /// Расшифровывает данные прямо в переданном буфере.
-    /// Буфер должен содержать [Ciphertext + Tag].
-    /// После успеха буфер будет содержать [Plaintext], а "хвост" (где был тег) станет мусором.
-    #[inline]
     pub fn decrypt_in_place(
         &self,
-        nonce_bytes: &[u8],
+        nonce: &[u8],
         buffer: &mut [u8],
-    ) -> Result<(), EncryptionError> {
-        let nonce = Nonce::<CryptoAlgorithm>::from_slice(nonce_bytes);
-        let len = buffer.len();
-
-        // 16 байт - размер тега Poly1305 для ChaCha20Poly1305
-        if len < 16 {
+    ) -> Result<usize, EncryptionError> {
+        if nonce.len() != self.nonce_len() || buffer.len() < self.tag_len() {
             return Err(EncryptionError::DecryptionFailed);
         }
-
-        // Разделяем буфер на сообщение и тег
-        let (msg, tag_bytes) = buffer.split_at_mut(len - 16);
-        let tag = Tag::<CryptoAlgorithm>::from_slice(tag_bytes);
-
-        // Используем detached версию, которая работает с сырыми слайсами
-        self.cipher
-            .decrypt_in_place_detached(nonce, &[], msg, tag)
-            .map_err(|_| EncryptionError::DecryptionFailed)?;
-
-        Ok(())
+        let body_len = buffer.len() - self.tag_len();
+        let (body, tag) = buffer.split_at_mut(body_len);
+        match self.cipher.as_ref() {
+            CipherInner::ChaCha(c) => {
+                let n = Nonce::<ChaCha20Poly1305>::from_slice(nonce);
+                c.decrypt_in_place_detached(n, &[], body, Tag::<ChaCha20Poly1305>::from_slice(tag))
+                    .map_err(|_| EncryptionError::DecryptionFailed)?;
+            }
+            CipherInner::KuznyechikMgm(c) => {
+                let n = mgm::Nonce::<mgm::aead::consts::U16>::from_slice(nonce);
+                let t = mgm::Tag::<mgm::aead::consts::U16>::from_slice(tag);
+                c.decrypt_in_place_detached(n, &[], body, t)
+                    .map_err(|_| EncryptionError::DecryptionFailed)?;
+            }
+        }
+        Ok(body_len)
     }
 
-    /// Encrypts a mutable buffer without allocating and returns its detached tag.
-    #[inline]
     pub fn encrypt_in_place_detached(
         &self,
-        nonce_bytes: &[u8],
+        nonce: &[u8],
         buffer: &mut [u8],
-    ) -> Result<[u8; 16], EncryptionError> {
-        let nonce = Nonce::<CryptoAlgorithm>::from_slice(nonce_bytes);
-        let tag = self
-            .cipher
-            .encrypt_in_place_detached(nonce, &[], buffer)
-            .map_err(|_| EncryptionError::EncryptionFailed)?;
-        Ok(tag.into())
+    ) -> Result<Vec<u8>, EncryptionError> {
+        if nonce.len() != self.nonce_len() {
+            return Err(EncryptionError::InvalidNonceLength);
+        }
+        let tag = match self.cipher.as_ref() {
+            CipherInner::ChaCha(c) => {
+                let n = Nonce::<ChaCha20Poly1305>::from_slice(nonce);
+                c.encrypt_in_place_detached(n, &[], buffer)
+                    .map(|tag| tag.to_vec())
+                    .map_err(|_| EncryptionError::EncryptionFailed)?
+            }
+            CipherInner::KuznyechikMgm(c) => {
+                let n = mgm::Nonce::<mgm::aead::consts::U16>::from_slice(nonce);
+                c.encrypt_in_place_detached(n, &[], buffer)
+                    .map(|tag| tag.to_vec())
+                    .map_err(|_| EncryptionError::EncryptionFailed)?
+            }
+        };
+        Ok(tag)
     }
 
-    pub fn generate_nonce(sequence: u64) -> [u8; 12] {
-        let mut nonce = [0u8; 12];
-        nonce[4..].copy_from_slice(&sequence.to_be_bytes());
-        nonce
+    pub fn generate_nonce(&self, prefix: &[u8], sequence: u64) -> Result<Vec<u8>, EncryptionError> {
+        if prefix.len() != self.nonce_prefix_len() {
+            return Err(EncryptionError::InvalidNonceLength);
+        }
+        let mut nonce = vec![0; self.nonce_len()];
+        nonce[..prefix.len()].copy_from_slice(prefix);
+        nonce[prefix.len()..].copy_from_slice(&sequence.to_be_bytes());
+        if self.algorithm == CryptoAlgorithm::KuznyechikMgm {
+            nonce[0] &= 0x7f;
+        }
+        Ok(nonce)
     }
 }
 
 #[derive(Debug)]
 pub enum EncryptionError {
+    InvalidKeyLength,
+    InvalidNonceLength,
+    InvalidPacketHeader,
     EncryptionFailed,
     DecryptionFailed,
 }
-
 impl std::fmt::Display for EncryptionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            EncryptionError::EncryptionFailed => write!(f, "Encryption failed"),
-            EncryptionError::DecryptionFailed => write!(f, "Decryption failed"),
-        }
+        write!(f, "{self:?}")
     }
 }
-
 impl std::error::Error for EncryptionError {}

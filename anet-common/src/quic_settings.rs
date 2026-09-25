@@ -67,7 +67,11 @@ fn calculate_window_from_bdp(mbps: u32, rtt_ms: u32) -> u64 {
     (bdp * 5 / 2).max(1_048_576)
 }
 
-pub fn build_transport_config(cfg: &QuicConfig, mtu: u16) -> Result<TransportConfig> {
+pub fn build_transport_config(
+    cfg: &QuicConfig,
+    mtu: u16,
+    envelope_overhead: usize,
+) -> Result<TransportConfig> {
     let mut config = TransportConfig::default();
     let rtt_duration = Duration::from_millis(cfg.expected_rtt_ms.max(1) as u64);
 
@@ -116,8 +120,7 @@ pub fn build_transport_config(cfg: &QuicConfig, mtu: u16) -> Result<TransportCon
         .send_window(final_send_window);
 
     // Настройка MTU Discovery
-    let envelope_limit =
-        (crate::consts::PADDING_MTU - crate::consts::TRANSPORT_ENVELOPE_OVERHEAD) as u16;
+    let envelope_limit = crate::consts::PADDING_MTU.saturating_sub(envelope_overhead) as u16;
     let initial_mtu = mtu.min(envelope_limit).max(1200);
     let max_mtu = cfg.max_mtu.min(envelope_limit).max(initial_mtu);
     let mut mtu_config = MtuDiscoveryConfig::default();
@@ -127,9 +130,7 @@ pub fn build_transport_config(cfg: &QuicConfig, mtu: u16) -> Result<TransportCon
         .mtu_discovery_config(Some(mtu_config));
     info!(
         "QUIC MTU: initial {}, discovery ceiling {} ({} bytes reserved for encryption).",
-        initial_mtu,
-        max_mtu,
-        crate::consts::TRANSPORT_ENVELOPE_OVERHEAD
+        initial_mtu, max_mtu, envelope_overhead
     );
 
     // Таймаут

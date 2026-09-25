@@ -12,13 +12,13 @@ use http::HeaderValue;
 use http::header::{ACCEPT_LANGUAGE, CACHE_CONTROL, ORIGIN, PRAGMA, USER_AGENT};
 use log::{debug, info, warn};
 use rand::{Rng, seq::SliceRandom};
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{DigitallySignedStruct, SignatureScheme};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{DigitallySignedStruct, SignatureScheme};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
@@ -26,9 +26,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, frame::coding::CloseCode};
-use tokio_tungstenite::{
-    Connector, MaybeTlsStream, WebSocketStream, client_async_tls_with_config,
-};
+use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream, client_async_tls_with_config};
 
 type ClientSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -270,7 +268,12 @@ async fn connect_authenticated(
     server: &ServerConfig,
     profile: &BrowserProfile,
     resume_session_id: Option<String>,
-) -> Result<(ClientSocket, anet_common::protocol::AuthResponse, [u8; 32], Option<IpAddr>)> {
+) -> Result<(
+    ClientSocket,
+    anet_common::protocol::AuthResponse,
+    [u8; 32],
+    Option<IpAddr>,
+)> {
     let request = browser_request(server, profile)?;
     let ws_config = WebSocketConfig::default()
         .read_buffer_size(64 * 1024)
@@ -294,7 +297,7 @@ async fn connect_authenticated(
         Some(ws_config),
         Some(connector_for(server)?),
     )
-        .await?;
+    .await?;
     let channel = WebSocketAuthChannel {
         socket: Mutex::new(socket),
     };
@@ -327,7 +330,7 @@ async fn close_browser_session(socket: &mut ClientSocket) {
             }
         }
     })
-        .await;
+    .await;
 }
 
 #[async_trait]
@@ -364,12 +367,10 @@ impl ClientTransport for WebSocketTransport {
             let mut current_response = initial_response;
 
             'sessions: loop {
-                let cipher = anet_common::encryption::Cipher::new(&key);
-                let nonce_prefix: [u8; 4] =
-                    match current_response.nonce_prefix.as_slice().try_into() {
-                        Ok(prefix) => prefix,
-                        Err(_) => break 'sessions,
-                    };
+                let cipher =
+                    anet_common::encryption::Cipher::with_algorithm(&key, config.crypto.algorithm)
+                        .expect("configured cipher algorithm");
+                let nonce_prefix = current_response.nonce_prefix.clone();
                 let mut sequence = 0u64;
                 let mut rotation = Box::pin(tokio::time::sleep(session_lifetime(&server)));
 
@@ -470,7 +471,7 @@ impl ClientTransport for WebSocketTransport {
                                 Some(logical_session_id.clone()),
                             ),
                         )
-                            .await
+                        .await
                         {
                             Ok(Ok(candidate)) => {
                                 if candidate.1.ip == expected_ip

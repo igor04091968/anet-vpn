@@ -148,7 +148,7 @@ where
     );
 
     let (router_tx, router_rx) = mpsc::channel(CHANNEL_BUFFER_SIZE);
-    registry.finalize_client(&client_info.assigned_ip, router_tx);
+    registry.finalize_client(&client_info, router_tx);
     let (reader, writer) = tokio::io::split(stream);
     let mut inbound = tokio::spawn(receive_from_client(
         reader,
@@ -162,7 +162,7 @@ where
         config.stealth.clone(),
         client_info.cipher.clone(),
         client_info.sequence.clone(),
-        client_info.nonce_prefix,
+        client_info.nonce_prefix.clone(),
     ));
 
     enum FinishedWorker {
@@ -232,7 +232,10 @@ where
                 registry.record_rx(&client_info, packet_len, "ssh");
             }
             Err(mpsc::error::TrySendError::Full(_)) => {
-                warn!("[SSH] TUN queue full, dropping uplink packet from {}", client_info.assigned_ip);
+                warn!(
+                    "[SSH] TUN queue full, dropping uplink packet from {}",
+                    client_info.assigned_ip
+                );
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 anyhow::bail!("TUN input queue closed");

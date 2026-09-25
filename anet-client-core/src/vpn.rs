@@ -37,8 +37,12 @@ impl VpnHandler {
         mpsc::Receiver<bytes::Bytes>,
     )> {
         // 1. Настройка транспорта
-        let transport_config =
-            build_transport_config(&self.config.quic_transport, auth_response.mtu as u16)?;
+        let envelope_overhead = self.config.crypto.algorithm.envelope_overhead();
+        let transport_config = build_transport_config(
+            &self.config.quic_transport,
+            auth_response.mtu as u16,
+            envelope_overhead,
+        )?;
 
         // 2. Создание сокета (AnetUdpSocket)
         let addr_str = self
@@ -47,10 +51,16 @@ impl VpnHandler {
             .first()
             .ok_or_else(|| anyhow::anyhow!("No servers defined in [[servers]]"))?
             .endpoint()?;
-        let server_addr: SocketAddr = addr_str.to_socket_addrs()?.next().ok_or(anyhow::anyhow!("Invalid server address"))?;
+        let server_addr: SocketAddr = addr_str
+            .to_socket_addrs()?
+            .next()
+            .ok_or(anyhow::anyhow!("Invalid server address"))?;
         let real_socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
-        let cipher = Arc::new(Cipher::new(&shared_key));
-        let nonce_prefix: [u8; 4] = auth_response.nonce_prefix.as_slice().try_into()?;
+        let cipher = Arc::new(Cipher::with_algorithm(
+            &shared_key,
+            self.config.crypto.algorithm,
+        )?);
+        let nonce_prefix = auth_response.nonce_prefix.clone();
 
         let anet_socket = Arc::new(AnetUdpSocket::new(
             real_socket,

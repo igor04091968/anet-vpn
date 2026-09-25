@@ -103,12 +103,11 @@ impl ClientTransport for SshTransport {
         let (client_stream, internal_stream) = tokio::io::duplex(MAX_PACKET_SIZE * 10);
         let (tunnel_reader, tunnel_writer) = tokio::io::split(internal_stream);
 
-        let cipher = Arc::new(anet_common::encryption::Cipher::new(&shared_key));
-        let nonce_prefix = auth_response
-            .nonce_prefix
-            .as_slice()
-            .try_into()
-            .context("server returned an invalid nonce prefix")?;
+        let cipher = Arc::new(anet_common::encryption::Cipher::with_algorithm(
+            &shared_key,
+            self.config.crypto.algorithm,
+        )?);
+        let nonce_prefix = auth_response.nonce_prefix.clone();
         let sequence = Arc::new(AtomicU64::new(0));
         let stealth = self.config.stealth.clone();
 
@@ -196,7 +195,8 @@ impl ClientTransport for SshTransport {
                 Ok(()) => match finished_worker {
                     FinishedWorker::Inbound => info!(
                         "[SSH] Tunnel closed: remote SSH server closed channel/connection (EOF / session limit or idle timeout). Duration: {:.1}s ({:.2} min)",
-                        duration, duration / 60.0
+                        duration,
+                        duration / 60.0
                     ),
                     FinishedWorker::TunnelInput => info!(
                         "[SSH] Tunnel closed: client TUN stream closed. Duration: {:.1}s",

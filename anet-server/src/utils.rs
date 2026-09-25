@@ -28,11 +28,17 @@ pub fn extract_ip_dst(pkt: &[u8]) -> Option<Ipv4Addr> {
 }
 
 #[inline]
-pub fn generate_unique_nonce_prefix(registry: Arc<ClientRegistry>) -> [u8; 4] {
+pub fn generate_unique_nonce_prefix(
+    registry: Arc<ClientRegistry>,
+    algorithm: anet_common::encryption::CryptoAlgorithm,
+) -> Vec<u8> {
     let mut rng = OsRng;
     loop {
-        let mut prefix = [0u8; 4];
+        let mut prefix = vec![0u8; algorithm.nonce_prefix_len()];
         rng.fill_bytes(&mut prefix);
+        if algorithm == anet_common::encryption::CryptoAlgorithm::KuznyechikMgm {
+            prefix[0] &= 0x7f;
+        }
         if registry.get_by_prefix(&prefix).is_none() {
             return prefix;
         }

@@ -19,6 +19,8 @@ rustls-pemfile = "2.2.0"
 base64 = "0.22.1"
 rand = { version = "0.8", features = ["std"] }
 chacha20poly1305 = "0.10.1"
+kuznyechik = "0.7"
+mgm = { path = "vendor/mgm" }
 quinn = {version = "0.11.11", features = ["rustls", "ring"]}
 serde = { version = "1.0.219", features = ["derive"] }
 toml = "0.9.8"
@@ -71,4 +73,3 @@ incremental = false
 
 [profile.release.package."*"]
 opt-level = 3
-

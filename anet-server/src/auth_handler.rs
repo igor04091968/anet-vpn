@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::Instant;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use arc_swap::ArcSwap;
 use bytes::{BufMut, Bytes, BytesMut};
 use dashmap::DashMap;
@@ -11,18 +11,17 @@ use ed25519_dalek::{SigningKey, VerifyingKey};
 use log::{info, warn};
 use prost::Message;
 use rand::rngs::OsRng;
-use rand::RngCore;
 use x25519_dalek::{PublicKey, StaticSecret};
 
-use anet_common::consts::{NONCE_LEN, PROTO_PAD_FIELD_OVERHEAD};
+use anet_common::consts::PROTO_PAD_FIELD_OVERHEAD;
 use anet_common::crypto_utils;
 use anet_common::dto::BillingType as DtoBillingType;
-use anet_common::encryption::Cipher;
+use anet_common::encryption::{Cipher, CryptoAlgorithm};
 use anet_common::padding_utils::{calculate_padding_needed, generate_random_padding};
 use anet_common::protocol::{
-    message::Content, AuthDenyNotification, AuthResponse, BillingType as ProtoBillingType,
-    DhClientExchange, DhServerExchange, EncryptedAuthRequest, EncryptedAuthResponse,
-    Message as AnetMessage,
+    AuthDenyNotification, AuthResponse, BillingType as ProtoBillingType, DhClientExchange,
+    DhServerExchange, EncryptedAuthRequest, EncryptedAuthResponse, Message as AnetMessage,
+    message::Content,
 };
 
 use crate::auth_provider::{AccessGrant, AuthProvider};
@@ -39,6 +38,7 @@ pub struct ServerAuthHandler {
     handshake_cipher: Arc<Cipher>,
     quic_cert_pem: String,
     padding_step: u16,
+    crypto_algorithm: CryptoAlgorithm,
 }
 
 #[cfg(test)]
@@ -50,8 +50,8 @@ mod tests {
     use anet_common::crypto_utils::generate_key_fingerprint;
     use anet_common::handshake_fragmentation::FragmentConfig;
     use async_trait::async_trait;
-    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
     use base64::Engine;
+    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
     use std::sync::Mutex;
     use std::time::Duration;
 
@@ -103,11 +103,7 @@ mod tests {
         let client_signing = SigningKey::generate(&mut OsRng);
         let server_signing = SigningKey::generate(&mut OsRng);
         let fingerprint = generate_key_fingerprint(&client_signing.verifying_key());
-        let auth_provider = Arc::new(AuthProvider::new(
-            vec![fingerprint],
-            vec![],
-            String::new(),
-        ));
+        let auth_provider = Arc::new(AuthProvider::new(vec![fingerprint], vec![], String::new()));
         let registry = Arc::new(ClientRegistry::new(
             IpPool::new(
                 "10.0.0.0".parse().unwrap(),
@@ -125,9 +121,12 @@ mod tests {
             server_signing.clone(),
             "test-quic-cert".to_string(),
             128,
-        );
+            CryptoAlgorithm::KuznyechikMgm,
+        )
+        .unwrap();
 
         let mut config: CoreConfig = toml::from_str("").unwrap();
+        config.crypto.algorithm = CryptoAlgorithm::KuznyechikMgm;
         config.keys.private_key = BASE64_STANDARD.encode(client_signing.to_bytes());
         config.keys.server_pub_key =
             BASE64_STANDARD.encode(server_signing.verifying_key().to_bytes());
@@ -138,31 +137,23 @@ mod tests {
             Duration::from_secs(2),
             first_auth.authenticate(&first_channel),
         )
-            .await
-            .expect("initial authentication timed out")
-            .unwrap();
-        let first_info = first_channel
-            .authenticated
-            .lock()
-            .unwrap()
-            .take()
-            .unwrap();
+        .await
+        .expect("initial authentication timed out")
+        .unwrap();
+        let first_info = first_channel.authenticated.lock().unwrap().take().unwrap();
         registry.suspend_client(first_info);
 
         let resumed_channel = channel(server, 21002);
-        let resumed_auth = AuthHandler::new_with_resume(
-            &config,
-            None,
-            Some(first_response.session_id.clone()),
-        )
-            .unwrap();
+        let resumed_auth =
+            AuthHandler::new_with_resume(&config, None, Some(first_response.session_id.clone()))
+                .unwrap();
         let (resumed_response, _) = tokio::time::timeout(
             Duration::from_secs(2),
             resumed_auth.authenticate(&resumed_channel),
         )
-            .await
-            .expect("resume authentication timed out")
-            .unwrap();
+        .await
+        .expect("resume authentication timed out")
+        .unwrap();
 
         assert_eq!(resumed_response.session_id, first_response.session_id);
         assert_eq!(resumed_response.ip, first_response.ip);
@@ -178,11 +169,15 @@ impl ServerAuthHandler {
         server_signing_key: SigningKey,
         quic_cert_pem: String,
         padding_step: u16,
-    ) -> Self {
+        crypto_algorithm: CryptoAlgorithm,
+    ) -> Result<Self> {
         let pub_key_bytes = server_signing_key.verifying_key().to_bytes();
-        let handshake_cipher = Arc::new(crypto_utils::create_handshake_cipher(&pub_key_bytes));
+        let handshake_cipher = Arc::new(crypto_utils::create_handshake_cipher(
+            &pub_key_bytes,
+            crypto_algorithm,
+        )?);
 
-        Self {
+        Ok(Self {
             registry,
             temp_dh_map,
             auth_provider,
@@ -190,7 +185,8 @@ impl ServerAuthHandler {
             handshake_cipher,
             quic_cert_pem,
             padding_step,
-        }
+            crypto_algorithm,
+        })
     }
 
     pub async fn process_handshake_packet(
@@ -225,10 +221,15 @@ impl ServerAuthHandler {
     }
 
     fn decode_obfuscated_packet(&self, packet: Bytes) -> Result<AnetMessage> {
-        if packet.len() < NONCE_LEN + 16 {
+        if packet.len()
+            < self.handshake_cipher.wire_marker_len()
+                + self.handshake_cipher.nonce_len()
+                + self.handshake_cipher.tag_len()
+            || !packet.starts_with(self.handshake_cipher.wire_marker())
+        {
             return Err(anyhow!("Packet too short"));
         }
-        let (nonce, ciphertext) = packet.split_at(NONCE_LEN);
+        let (nonce, ciphertext) = self.handshake_cipher.split_frame(&packet)?;
         let plaintext = self
             .handshake_cipher
             .decrypt(nonce, Bytes::copy_from_slice(ciphertext))?;
@@ -239,11 +240,13 @@ impl ServerAuthHandler {
         let mut data = Vec::new();
         message.encode(&mut data)?;
 
-        let mut nonce = [0u8; NONCE_LEN];
-        OsRng.fill_bytes(&mut nonce);
+        let nonce = self.handshake_cipher.random_nonce();
 
         let ciphertext = self.handshake_cipher.encrypt(&nonce, Bytes::from(data))?;
-        let mut packet = BytesMut::with_capacity(NONCE_LEN + ciphertext.len());
+        let mut packet = BytesMut::with_capacity(
+            self.handshake_cipher.wire_marker_len() + nonce.len() + ciphertext.len(),
+        );
+        packet.put_slice(self.handshake_cipher.wire_marker());
         packet.put_slice(&nonce);
         packet.put(ciphertext);
         Ok(packet.freeze())
@@ -259,7 +262,7 @@ impl ServerAuthHandler {
                 .try_into()
                 .map_err(|_| anyhow!("Invalid key length"))?,
         )
-            .map_err(|_| anyhow!("Invalid verifying key"))?;
+        .map_err(|_| anyhow!("Invalid verifying key"))?;
 
         let client_fingerprint = crypto_utils::generate_key_fingerprint(&client_public_key);
 
@@ -282,7 +285,9 @@ impl ServerAuthHandler {
         } else if !self.registry.is_accepting_connections() {
             Err("Node is not accepting new connections".to_string())
         } else {
-            self.auth_provider.is_client_allowed(&client_fingerprint).await
+            self.auth_provider
+                .is_client_allowed(&client_fingerprint)
+                .await
         };
 
         match access {
@@ -352,9 +357,7 @@ impl ServerAuthHandler {
                 );
 
                 let mut response_message = AnetMessage {
-                    content: Some(Content::AuthError(AuthDenyNotification {
-                        message: reason,
-                    })),
+                    content: Some(Content::AuthError(AuthDenyNotification { message: reason })),
                     padding: vec![],
                 };
 
@@ -378,7 +381,7 @@ impl ServerAuthHandler {
             .remove(&remote_addr)
             .map(|(_, v)| v)
             .context("DH session expired or not found")?;
-        let cipher = Cipher::new(&temp_info.shared_key);
+        let cipher = Cipher::with_algorithm(&temp_info.shared_key, self.crypto_algorithm)?;
         let plaintext = cipher
             .decrypt(enc_req.nonce.as_slice(), Bytes::from(enc_req.ciphertext))
             .context("Phase III payload decryption failed")?;
@@ -462,14 +465,18 @@ impl ServerAuthHandler {
             )
         };
 
-        let nonce_prefix = generate_unique_nonce_prefix(self.registry.clone());
+        let nonce_prefix =
+            generate_unique_nonce_prefix(self.registry.clone(), self.crypto_algorithm);
 
         let client_info = Arc::new(ClientTransportInfo {
-            cipher: Arc::new(Cipher::new(&temp_info.shared_key)),
+            cipher: Arc::new(Cipher::with_algorithm(
+                &temp_info.shared_key,
+                self.crypto_algorithm,
+            )?),
             sequence: Arc::new(AtomicU64::new(0)),
             assigned_ip: assigned_ip.clone(),
             session_id: session_id.clone(),
-            nonce_prefix,
+            nonce_prefix: nonce_prefix.clone(),
             remote_addr: ArcSwap::new(Arc::new(remote_addr)),
             fingerprint: temp_info.client_fingerprint.clone(),
             user_id,
@@ -488,19 +495,21 @@ impl ServerAuthHandler {
                 std::time::SystemTime::now()
                     .duration_since(std::time::SystemTime::UNIX_EPOCH)
                     .unwrap_or_default()
-                    .as_secs()
+                    .as_secs(),
             )),
         });
 
-
-
         if !is_resume {
             // Мгновенно убиваем зомби-сессии этого же клиента перед стартом новой
-            self.registry.disconnect_by_fingerprint(&temp_info.client_fingerprint).await;
+            self.registry
+                .disconnect_by_fingerprint(&temp_info.client_fingerprint)
+                .await;
         }
 
         self.registry.pre_register_client(client_info.clone());
-        self.auth_provider.report_session_start(temp_info.client_fingerprint).await;
+        self.auth_provider
+            .report_session_start(temp_info.client_fingerprint)
+            .await;
 
         let (netmask, gateway, mtu) = self.registry.get_network_params();
 
@@ -542,9 +551,8 @@ impl ServerAuthHandler {
         let mut raw_resp = Vec::new();
         inner_msg.encode(&mut raw_resp)?;
 
-        let cipher = Cipher::new(&temp_info.shared_key);
-        let mut nonce_bytes = [0u8; NONCE_LEN];
-        OsRng.fill_bytes(&mut nonce_bytes);
+        let cipher = Cipher::with_algorithm(&temp_info.shared_key, self.crypto_algorithm)?;
+        let nonce_bytes = cipher.random_nonce();
         let ciphertext = cipher.encrypt(&nonce_bytes, Bytes::from(raw_resp))?;
 
         let mut outer_msg = AnetMessage {
@@ -555,7 +563,7 @@ impl ServerAuthHandler {
             padding: vec![],
         };
         outer_msg.padding = generate_random_padding(calculate_padding_needed(
-            outer_msg.encoded_len() + NONCE_LEN + PROTO_PAD_FIELD_OVERHEAD,
+            outer_msg.encoded_len() + cipher.nonce_len() + PROTO_PAD_FIELD_OVERHEAD,
             self.padding_step,
         ));
 

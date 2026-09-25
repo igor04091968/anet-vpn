@@ -27,19 +27,24 @@ pub struct ANetServer {
 impl ANetServer {
     pub fn new(cfg_ref: &Config) -> Result<Self> {
         let t_prm = TunParams {
-            netmask: cfg_ref.network.mask.parse()?, gateway: cfg_ref.network.gateway.parse()?,
-            address: cfg_ref.network.self_ip.parse()?, name: cfg_ref.network.if_name.clone(),
-            mtu: cfg_ref.network.mtu, network: Some(cfg_ref.network.net.parse()?),
+            netmask: cfg_ref.network.mask.parse()?,
+            gateway: cfg_ref.network.gateway.parse()?,
+            address: cfg_ref.network.self_ip.parse()?,
+            name: cfg_ref.network.if_name.clone(),
+            mtu: cfg_ref.network.mtu,
+            network: Some(cfg_ref.network.net.parse()?),
         };
 
         let pl = IpPool::new(
-            cfg_ref.network.net.parse()?, cfg_ref.network.mask.parse()?,
-            cfg_ref.network.gateway.parse()?, cfg_ref.network.self_ip.parse()?, cfg_ref.network.mtu,
+            cfg_ref.network.net.parse()?,
+            cfg_ref.network.mask.parse()?,
+            cfg_ref.network.gateway.parse()?,
+            cfg_ref.network.self_ip.parse()?,
+            cfg_ref.network.mtu,
         );
 
         let sk_bytes = BASE64_STANDARD.decode(&cfg_ref.crypto.server_signing_key)?;
         let sign_key = SigningKey::from_bytes(&sk_bytes.try_into().unwrap());
-
 
         let a_prov = Arc::new(AuthProvider::new(
             cfg_ref.authentication.allowed_clients.clone(),
@@ -57,11 +62,22 @@ impl ANetServer {
         ));
 
         let ac = ServerAuthHandler::new(
-            reg.clone(), dh.clone(), a_prov, sign_key,
-            cfg_ref.crypto.quic_cert.clone(), cfg_ref.stealth.padding_step,
-        );
+            reg.clone(),
+            dh.clone(),
+            a_prov,
+            sign_key,
+            cfg_ref.crypto.quic_cert.clone(),
+            cfg_ref.stealth.padding_step,
+            cfg_ref.crypto.algorithm,
+        )?;
 
-        Ok(Self { cfg: Arc::new(cfg_ref.clone()), registry: reg, temp_dh_map: dh, tun_manager: TunManager::new(t_prm)?, auth_handler_core: ac })
+        Ok(Self {
+            cfg: Arc::new(cfg_ref.clone()),
+            registry: reg,
+            temp_dh_map: dh,
+            tun_manager: TunManager::new(t_prm)?,
+            auth_handler_core: ac,
+        })
     }
 
     pub async fn run(&mut self) -> Result<()> {
@@ -95,9 +111,13 @@ impl ANetServer {
         let rx_reg = self.registry.clone();
         tokio::spawn(async move {
             while let Some(packet) = rx_tun.recv().await {
-                if packet.len() < 20 { continue; }
+                if packet.len() < 20 {
+                    continue;
+                }
                 if let Some(dst_ip) = crate::utils::extract_ip_dst(&packet) {
-                    rx_reg.route_packet_to_client(&dst_ip.to_string(), packet).await;
+                    rx_reg
+                        .route_packet_to_client(&dst_ip.to_string(), packet)
+                        .await;
                 }
             }
         });

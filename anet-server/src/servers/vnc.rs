@@ -67,23 +67,23 @@ async fn handle_vnc_session(
         RFB_HANDSHAKE_TIMEOUT,
         emulate_rfb_server_handshake(&mut stream),
     )
-        .await
-        .context("RFB handshake timed out")??;
+    .await
+    .context("RFB handshake timed out")??;
     info!("[VNC] RFB handshake complete for {remote_addr}");
 
     let client_info = tokio::time::timeout(
         ASTP_AUTH_TIMEOUT,
         authenticate(&mut stream, remote_addr, &auth_handler),
     )
-        .await
-        .context("ASTP authentication timed out")??;
+    .await
+    .context("ASTP authentication timed out")??;
     info!(
         "[VNC] ASTP authenticated for {}; assigned IP {}",
         remote_addr, client_info.assigned_ip
     );
 
     let (router_tx, router_rx) = mpsc::channel(anet_common::consts::CHANNEL_BUFFER_SIZE);
-    registry.finalize_client(&client_info.assigned_ip, router_tx);
+    registry.finalize_client(&client_info, router_tx);
 
     let (reader, writer) = tokio::io::split(stream);
     let mut inbound = tokio::spawn(receive_from_client(
@@ -167,7 +167,10 @@ async fn receive_from_client(
                 registry.record_rx(&client_info, packet_len, "vnc");
             }
             Err(mpsc::error::TrySendError::Full(_)) => {
-                warn!("[VNC] TUN queue full, dropping uplink packet from {}", client_info.assigned_ip);
+                warn!(
+                    "[VNC] TUN queue full, dropping uplink packet from {}",
+                    client_info.assigned_ip
+                );
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 anyhow::bail!("TUN input queue closed");
@@ -237,8 +240,15 @@ async fn send_to_client(
             if packet.len() >= 20 {
                 let sequence = client_info.sequence.fetch_add(1, Ordering::Relaxed);
                 let total_len = packet.len() + 38;
-                let padding = anet_common::padding_utils::calculate_padding_needed(total_len, stealth.padding_step);
-                let safe_padding = if total_len + usize::from(padding) > PADDING_MTU { 0 } else { padding };
+                let padding = anet_common::padding_utils::calculate_padding_needed(
+                    total_len,
+                    stealth.padding_step,
+                );
+                let safe_padding = if total_len + usize::from(padding) > PADDING_MTU {
+                    0
+                } else {
+                    padding
+                };
 
                 let encrypted = anet_common::transport::wrap_packet(
                     &client_info.cipher,
@@ -286,7 +296,7 @@ fn schedule_with_jitter(
             }
             packet
         }
-            .boxed(),
+        .boxed(),
     );
 }
 

@@ -1,4 +1,4 @@
-use crate::encryption::Cipher;
+use crate::encryption::{Cipher, CryptoAlgorithm};
 use base64::prelude::*;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
@@ -7,11 +7,14 @@ use x25519_dalek::SharedSecret;
 /// Создает Cipher для шифрования/дешифрования ПЕРВОГО пакета (Handshake).
 /// В качестве ключа используется SHA256 от публичного ключа сервера (Ed25519).
 /// Обеспечивает обфускацию: пакет выглядит как шум для любого, кто не знает PubKey сервера.
-pub fn create_handshake_cipher(server_pub_key_bytes: &[u8]) -> Cipher {
+pub fn create_handshake_cipher(
+    server_pub_key_bytes: &[u8],
+    algorithm: CryptoAlgorithm,
+) -> anyhow::Result<Cipher> {
     let mut hasher = Sha256::new();
     hasher.update(server_pub_key_bytes);
     let key: [u8; 32] = hasher.finalize().into();
-    Cipher::new(&key)
+    Ok(Cipher::with_algorithm(&key, algorithm)?)
 }
 
 /// Выведение симметричного ключа из DH Shared Secret

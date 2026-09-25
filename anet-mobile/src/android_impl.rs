@@ -216,12 +216,9 @@ impl TunFactory for AndroidCallbackTunFactory {
         // --- 3. Tun Creation ---
         let mut config = Configuration::default();
         config.raw_fd(fd);
-        // КРИТИЧНО: fd принадлежит Java-стороне (ParcelFileDescriptor в VpnService).
-        // По умолчанию tun-крейт закрывает fd при drop устройства — при реконнекте
-        // это приводит к двойному close() одного номера fd с двух сторон. Если между
-        // ними номер успел переиспользоваться (сокет, файл) — закрывается ЧУЖОЙ
-        // дескриптор, и приложение ловит случайные, невоспроизводимые глюки.
-        config.close_fd_on_drop(false);
+        // Kotlin transfers a duplicated descriptor to Rust. Rust owns this fd;
+        // the service keeps and closes its original ParcelFileDescriptor.
+        config.close_fd_on_drop(true);
         if let Ok(ipv4) = auth.ip.parse::<Ipv4Addr>() {
             config.address(ipv4);
         }
@@ -250,7 +247,11 @@ impl TunFactory for AndroidCallbackTunFactory {
                 if buf.capacity() < MAX_PACKET_SIZE {
                     buf = BytesMut::with_capacity(READ_CHUNK);
                 }
-                match reader.read_buf(&mut buf).await {
+                let read = tokio::select! {
+                    _ = tx_to_core.closed() => break,
+                    result = reader.read_buf(&mut buf) => result,
+                };
+                match read {
                     Ok(n) if n > 0 => {
                         if tx_to_core.send(buf.split().freeze()).await.is_err() {
                             break;

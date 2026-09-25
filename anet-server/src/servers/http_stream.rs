@@ -1,9 +1,9 @@
-use crate::client_registry::ClientRegistry;
 use crate::auth_handler::ServerAuthHandler;
+use crate::client_registry::ClientRegistry;
 use crate::config::Config;
 use anet_common::consts::{CHANNEL_BUFFER_SIZE, MAX_PACKET_SIZE};
-use anet_common::transport::wrap_packet_padded;
 use anet_common::reassembly::ReassemblyQueue;
+use anet_common::transport::wrap_packet_padded;
 use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
 use httparse::{Request, Status};
@@ -12,17 +12,19 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 // Используем синхронный Mutex для быстрых, неблокирующих операций
+use anet_common::stream_framing::read_next_packet;
+use dashmap::DashMap;
 use std::sync::Mutex as StdMutex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, Mutex};
-use dashmap::DashMap;
+use tokio::sync::{Mutex, mpsc};
 use url::Url;
-use anet_common::stream_framing::read_next_packet;
 
 fn get_real_ip(req: &httparse::Request, fallback: SocketAddr) -> SocketAddr {
     for header in req.headers.iter() {
-        if header.name.eq_ignore_ascii_case("x-real-ip") || header.name.eq_ignore_ascii_case("x-forwarded-for") {
+        if header.name.eq_ignore_ascii_case("x-real-ip")
+            || header.name.eq_ignore_ascii_case("x-forwarded-for")
+        {
             if let Ok(ip_str) = std::str::from_utf8(header.value) {
                 let first_ip = ip_str.split(',').next().unwrap_or("").trim();
                 if let Ok(ip) = first_ip.parse::<std::net::IpAddr>() {
@@ -47,7 +49,10 @@ async fn send_http_response(
          Content-Type: {}\r\n\
          Content-Length: {}\r\n\
          Connection: close\r\n\r\n",
-        status_code, status_text, content_type, body.len()
+        status_code,
+        status_text,
+        content_type,
+        body.len()
     );
     stream.write_all(response.as_bytes()).await?;
     stream.write_all(body).await?;
@@ -65,7 +70,10 @@ fn extract_query_param(path: &str, param: &str) -> Option<String> {
 }
 
 /// Дешифрует входящий пакет и извлекает из него оригинальный sequence (u64)
-fn unwrap_packet_with_seq(cipher: &anet_common::encryption::Cipher, raw_packet: Bytes) -> Result<(u64, Bytes)> {
+fn unwrap_packet_with_seq(
+    cipher: &anet_common::encryption::Cipher,
+    raw_packet: Bytes,
+) -> Result<(u64, Bytes)> {
     let mut buffer = raw_packet
         .try_into_mut()
         .map_err(|_| anyhow::anyhow!("Encrypted packet buffer is unexpectedly shared"))?;
@@ -78,7 +86,8 @@ fn unwrap_packet_with_seq(cipher: &anet_common::encryption::Cipher, raw_packet: 
     nonce.copy_from_slice(&buffer[..12]);
 
     let payload_buffer = &mut buffer[12..];
-    cipher.decrypt_in_place(&nonce, payload_buffer)
+    cipher
+        .decrypt_in_place(&nonce, payload_buffer)
         .map_err(|e| anyhow::anyhow!("Decryption failed: {}", e))?;
 
     let plaintext_len = payload_buffer.len() - 16;
@@ -102,7 +111,6 @@ fn unwrap_packet_with_seq(cipher: &anet_common::encryption::Cipher, raw_packet: 
 
     Ok((seq, payload_bytes))
 }
-
 
 /// Контекст сессии на сервере (Очередь вывода + Скользящее окно ввода)
 struct ServerSession {
@@ -137,7 +145,9 @@ pub async fn run_http_stream_server(
         );
 
         tokio::spawn(async move {
-            if let Err(_e) = handle_http_connection(stream, remote_addr, rg, cfg, tx, auth, sessions).await {
+            if let Err(_e) =
+                handle_http_connection(stream, remote_addr, rg, cfg, tx, auth, sessions).await
+            {
                 // Игнорируем штатные обрывы TCP
             }
         });
@@ -156,7 +166,10 @@ async fn handle_http_connection(
     let mut buffer = BytesMut::with_capacity(MAX_PACKET_SIZE * 4);
 
     // Чтение путей из конфигурационного файла [ahttp]
-    let path_handshake = format!("{}{}", config.server.ahttp_path, config.ahttp.handshake_path);
+    let path_handshake = format!(
+        "{}{}",
+        config.server.ahttp_path, config.ahttp.handshake_path
+    );
     let path_auth = format!("{}{}", config.server.ahttp_path, config.ahttp.auth_path);
     let path_traffic = format!("{}{}", config.server.ahttp_path, config.ahttp.traffic_path);
 
@@ -164,7 +177,9 @@ async fn handle_http_connection(
         // УВЕЛИЧЕН БУФЕР ЧТЕНИЯ: 64 КБ (размер окна TCP) вместо 8 КБ
         let mut temp = [0u8; 65536];
         let n = stream.read(&mut temp).await?;
-        if n == 0 { return Ok(()); }
+        if n == 0 {
+            return Ok(());
+        }
         buffer.extend_from_slice(&temp[..n]);
 
         let mut headers = [httparse::EMPTY_HEADER; 64];
@@ -187,7 +202,9 @@ async fn handle_http_connection(
                 while buffer.len() < header_len + content_length {
                     let mut temp = [0u8; 65536];
                     let n = stream.read(&mut temp).await?;
-                    if n == 0 { return Err(anyhow::anyhow!("Connection closed while reading body")); }
+                    if n == 0 {
+                        return Err(anyhow::anyhow!("Connection closed while reading body"));
+                    }
                     buffer.extend_from_slice(&temp[..n]);
                 }
 
@@ -197,51 +214,82 @@ async fn handle_http_connection(
                 match base_path {
                     p if p == path_handshake => {
                         let packet = Bytes::copy_from_slice(body);
-                        let (response, _) = auth_handler.process_handshake_packet(packet, real_addr, "ahttp").await?;
+                        let (response, _) = auth_handler
+                            .process_handshake_packet(packet, real_addr, "ahttp")
+                            .await?;
                         if let Some(resp) = response {
-                            send_http_response(&mut stream, 200, "OK", "application/octet-stream", &resp).await?;
+                            send_http_response(
+                                &mut stream,
+                                200,
+                                "OK",
+                                "application/octet-stream",
+                                &resp,
+                            )
+                            .await?;
                         }
                     }
                     p if p == path_auth => {
                         let packet = Bytes::copy_from_slice(body);
-                        let (response, _) = auth_handler.process_handshake_packet(packet, real_addr, "ahttp").await?;
+                        let (response, _) = auth_handler
+                            .process_handshake_packet(packet, real_addr, "ahttp")
+                            .await?;
                         if let Some(resp) = response {
-                            send_http_response(&mut stream, 200, "OK", "application/octet-stream", &resp).await?;
+                            send_http_response(
+                                &mut stream,
+                                200,
+                                "OK",
+                                "application/octet-stream",
+                                &resp,
+                            )
+                            .await?;
                         }
                     }
                     // ЕДИНАЯ ТОЧКА ТРАФИКА ДЛЯ UPLINK И DOWNLINK
                     p if p == path_traffic => {
-                        let session_id = extract_query_param(&path, "session_id").context("Missing session_id in query")?;
+                        let session_id = extract_query_param(&path, "session_id")
+                            .context("Missing session_id in query")?;
 
                         if let Some(client_info) = registry.get_by_session(&session_id) {
-
                             client_info.last_activity.store(
                                 std::time::SystemTime::now()
                                     .duration_since(std::time::SystemTime::UNIX_EPOCH)
                                     .unwrap_or_default()
                                     .as_secs(),
-                                Ordering::Relaxed
+                                Ordering::Relaxed,
                             );
 
                             // Получаем или инициализируем контекст сессии
-                            let session = sessions.entry(session_id.clone()).or_insert_with(|| {
-                                let (tx_router, rx_router) = mpsc::channel::<Bytes>(CHANNEL_BUFFER_SIZE);
-                                registry.finalize_client(&client_info.assigned_ip, tx_router);
-                                Arc::new(ServerSession {
-                                    rx_router: Arc::new(Mutex::new(rx_router)),
-                                    reassembler: Arc::new(StdMutex::new(ReassemblyQueue::new(config.ahttp.reassembly_queue_max_size))),
+                            let session = sessions
+                                .entry(session_id.clone())
+                                .or_insert_with(|| {
+                                    let (tx_router, rx_router) =
+                                        mpsc::channel::<Bytes>(CHANNEL_BUFFER_SIZE);
+                                    registry.finalize_client(&client_info, tx_router);
+                                    Arc::new(ServerSession {
+                                        rx_router: Arc::new(Mutex::new(rx_router)),
+                                        reassembler: Arc::new(StdMutex::new(ReassemblyQueue::new(
+                                            config.ahttp.reassembly_queue_max_size,
+                                        ))),
+                                    })
                                 })
-                            }).value().clone();
+                                .value()
+                                .clone();
 
                             // 1. Прием Uplink-трафика (Распаковка через окно упорядочивания)
                             if !body.is_empty() {
                                 let mut cursor = std::io::Cursor::new(body);
                                 let mut to_forward: Vec<Bytes> = Vec::new();
 
-                                while let Ok(Some(encrypted_packet)) = read_next_packet(&mut cursor).await {
-                                    if let Ok((seq, decrypted)) = unwrap_packet_with_seq(&client_info.cipher, encrypted_packet) {
+                                while let Ok(Some(encrypted_packet)) =
+                                    read_next_packet(&mut cursor).await
+                                {
+                                    if let Ok((seq, decrypted)) = unwrap_packet_with_seq(
+                                        &client_info.cipher,
+                                        encrypted_packet,
+                                    ) {
                                         let ready_packets = {
-                                            let mut reassembler = session.reassembler.lock().unwrap();
+                                            let mut reassembler =
+                                                session.reassembler.lock().unwrap();
                                             reassembler.insert(seq, decrypted)
                                         };
                                         to_forward.extend(ready_packets);
@@ -272,34 +320,45 @@ async fn handle_http_connection(
                             let padding_step = config.stealth.padding_step;
 
                             if let Ok(mut rx_router) = session.rx_router.try_lock() {
-                                let timeout_duration = std::time::Duration::from_millis(config.ahttp.poll_timeout_ms);
+                                let timeout_duration =
+                                    std::time::Duration::from_millis(config.ahttp.poll_timeout_ms);
 
-                                if let Ok(Some(packet)) = tokio::time::timeout(timeout_duration, rx_router.recv()).await {
+                                if let Ok(Some(packet)) =
+                                    tokio::time::timeout(timeout_duration, rx_router.recv()).await
+                                {
                                     if packet.len() >= 20 {
-                                        let seq = client_info.sequence.fetch_add(1, Ordering::Relaxed);
+                                        let seq =
+                                            client_info.sequence.fetch_add(1, Ordering::Relaxed);
                                         if let Ok(encrypted) = wrap_packet_padded(
                                             &client_info.cipher,
                                             &client_info.nonce_prefix,
                                             seq,
                                             packet,
-                                            padding_step
+                                            padding_step,
                                         ) {
-                                            let framed = anet_common::stream_framing::frame_packet(encrypted);
+                                            let framed = anet_common::stream_framing::frame_packet(
+                                                encrypted,
+                                            );
                                             body_buf.extend_from_slice(&framed);
                                         }
                                     }
 
                                     while let Ok(next_packet) = rx_router.try_recv() {
                                         if next_packet.len() >= 20 {
-                                            let seq = client_info.sequence.fetch_add(1, Ordering::Relaxed);
+                                            let seq = client_info
+                                                .sequence
+                                                .fetch_add(1, Ordering::Relaxed);
                                             if let Ok(encrypted) = wrap_packet_padded(
                                                 &client_info.cipher,
                                                 &client_info.nonce_prefix,
                                                 seq,
                                                 next_packet,
-                                                padding_step
+                                                padding_step,
                                             ) {
-                                                let framed = anet_common::stream_framing::frame_packet(encrypted);
+                                                let framed =
+                                                    anet_common::stream_framing::frame_packet(
+                                                        encrypted,
+                                                    );
                                                 body_buf.extend_from_slice(&framed);
                                             }
                                         }
@@ -311,7 +370,9 @@ async fn handle_http_connection(
                             }
 
                             // 3. Отвечаем клиенту
-                            let response_header = config.ahttp.response_headers
+                            let response_header = config
+                                .ahttp
+                                .response_headers
                                 .replace("\r\n", "\n")
                                 .replace('\n', "\r\n")
                                 .replace("{}", &body_buf.len().to_string());
@@ -321,14 +382,27 @@ async fn handle_http_connection(
                                 stream.write_all(&body_buf).await?;
                             }
                             stream.flush().await?;
-
                         } else {
                             sessions.remove(&session_id);
-                            send_http_response(&mut stream, 401, "Unauthorized", "text/plain", b"Unauthorized").await?;
+                            send_http_response(
+                                &mut stream,
+                                401,
+                                "Unauthorized",
+                                "text/plain",
+                                b"Unauthorized",
+                            )
+                            .await?;
                         }
                     }
                     _ => {
-                        send_http_response(&mut stream, 404, "Not Found", "text/plain", b"Not Found").await?;
+                        send_http_response(
+                            &mut stream,
+                            404,
+                            "Not Found",
+                            "text/plain",
+                            b"Not Found",
+                        )
+                        .await?;
                     }
                 }
 

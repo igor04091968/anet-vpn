@@ -46,18 +46,58 @@ impl IpPool {
             if ip == gw || ip == srv {
                 continue;
             }
-            if self.used.contains(&ip) {
-                continue;
+            if candidate == (net | !mask) {
+                break; // subnet broadcast is not a host address
             }
-
-            self.used.insert(ip);
-            return Some(ip);
+            // Claim atomically: parallel handshakes must never share an IP.
+            if self.used.insert(ip) {
+                return Some(ip);
+            }
         }
         None
     }
 
     pub fn release(&self, ip: Ipv4Addr) -> bool {
-        self.used.remove(&ip);
-        self.used.contains(&ip)
+        self.used.remove(&ip).is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pool(network: &str, mask: &str, gateway: &str, server: &str) -> IpPool {
+        IpPool::new(
+            network.parse().unwrap(),
+            mask.parse().unwrap(),
+            gateway.parse().unwrap(),
+            server.parse().unwrap(),
+            1400,
+        )
+    }
+
+    #[test]
+    fn excludes_gateway_server_and_broadcast_and_releases_once() {
+        let main_pool = pool("10.0.0.0", "255.255.255.0", "10.0.0.1", "10.0.0.2");
+        assert_eq!(main_pool.allocate(), Some("10.0.0.3".parse().unwrap()));
+        assert!(main_pool.release("10.0.0.3".parse().unwrap()));
+        assert!(!main_pool.release("10.0.0.3".parse().unwrap()));
+
+        let small = pool("192.0.2.0", "255.255.255.252", "192.0.2.1", "192.0.2.2");
+        assert_eq!(small.allocate(), None);
+    }
+
+    #[test]
+    fn concurrent_allocations_are_unique() {
+        let pool = pool("10.1.0.0", "255.255.255.0", "10.1.0.1", "10.1.0.2");
+        let threads: Vec<_> = (0..32)
+            .map(|_| {
+                let pool = pool.clone();
+                std::thread::spawn(move || pool.allocate().unwrap())
+            })
+            .collect();
+        let allocated: std::collections::HashSet<_> =
+            threads.into_iter().map(|t| t.join().unwrap()).collect();
+        assert_eq!(allocated.len(), 32);
     }
 }

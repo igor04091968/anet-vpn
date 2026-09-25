@@ -1,4 +1,5 @@
 use anet_common::config::StealthConfig;
+use anet_common::encryption::CryptoAlgorithm;
 use anet_common::quic_settings::QuicConfig;
 use clap::Parser;
 use log::warn;
@@ -7,10 +8,12 @@ use std::process::exit;
 use tokio::fs::read_to_string;
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct CryptoConfig {
     pub quic_cert: String,
     pub quic_key: String,
     pub server_signing_key: String,
+    pub algorithm: CryptoAlgorithm,
 }
 
 impl Default for CryptoConfig {
@@ -19,6 +22,7 @@ impl Default for CryptoConfig {
             quic_cert: "QUIC_CERT_PLACEHOLDER".to_string(),
             quic_key: "QUIC_KEY_PLACEHOLDER".to_string(),
             server_signing_key: "SERVER_SIGNING_KEY_PLACEHOLDER".to_string(),
+            algorithm: CryptoAlgorithm::ChaCha20Poly1305,
         }
     }
 }
@@ -184,10 +188,11 @@ impl Default for AhttpServerConfig {
                                Pragma: no-cache\r\n\
                                X-Accel-Buffering: no\r\n\
                                Content-Length: {}\r\n\
-                               Connection: keep-alive\r\n\r\n".to_string(),
+                               Connection: keep-alive\r\n\r\n"
+                .to_string(),
             reassembly_queue_max_size: 1024,
             coalesce_budget_bytes: 65536,
-            poll_timeout_ms: 30
+            poll_timeout_ms: 30,
         }
     }
 }
@@ -237,7 +242,10 @@ pub async fn load() -> anyhow::Result<Config> {
             Ok(cfg)
         }
         Err(_) => {
-            warn!("\nCannot find server config file in {}, use '-c' or '--cfg'\n", opt.cfg);
+            warn!(
+                "\nCannot find server config file in {}, use '-c' or '--cfg'\n",
+                opt.cfg
+            );
             exit(-1)
         }
     }

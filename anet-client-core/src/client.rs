@@ -138,16 +138,15 @@ impl AnetClient {
 
     pub async fn start(&self) -> Result<()> {
         if self
-        .is_active
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return Err(anyhow!("VPN tunnel is already active"));
-    }
+            .is_active
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err(anyhow!("VPN tunnel is already active"));
+        }
 
-    self.stop_requested.store(false, Ordering::SeqCst);
-
-
+        // A client instance is single-use. Resetting this flag here races with a
+        // stop arriving after JNI publishes the client but before start() runs.
         let mut config_clone = self.config.clone();
         if let Err(e) = config_clone.sanitize() {
             self.is_active.store(false, Ordering::SeqCst);
@@ -479,8 +478,14 @@ impl AnetClient {
 
                 // ВНИМАНИЕ: ЗДЕСЬ УДАЛЁН flush().await, ИНАЧЕ QUIC И SSH РАБОТАЮТ КАК STOP-AND-WAIT
                 if let Err(e) = stream_writer.write_all(&write_buf).await {
-                    warn!("[Tunnel/Tx] Failed to write {} bytes to VPN stream: {e:#}", write_buf.len());
-                    *reason_t1.lock().unwrap() = format!("Failed to write {} bytes to VPN stream: {e:#}", write_buf.len());
+                    warn!(
+                        "[Tunnel/Tx] Failed to write {} bytes to VPN stream: {e:#}",
+                        write_buf.len()
+                    );
+                    *reason_t1.lock().unwrap() = format!(
+                        "Failed to write {} bytes to VPN stream: {e:#}",
+                        write_buf.len()
+                    );
                     sig_t1.notify_one();
                     break;
                 }
@@ -603,7 +608,10 @@ impl AnetClient {
                     }
                 }
 
-                if health_pause.as_ref().is_some_and(|pause| pause.load(Ordering::Acquire)) {
+                if health_pause
+                    .as_ref()
+                    .is_some_and(|pause| pause.load(Ordering::Acquire))
+                {
                     *rx_check.lock().unwrap() = Instant::now();
                     *tx_check.lock().unwrap() = Instant::now();
                     continue;
@@ -614,10 +622,20 @@ impl AnetClient {
                         let stats = conn.stats();
                         warn!(
                             "[Health] Underlying QUIC connection closed: {:?}. Stats: RTT={:?}, Lost(Tx)={}, UDP Tx={}/Rx={} datagrams, Cwnd={} B. Triggering reconnect...",
-                            reason, stats.path.rtt, stats.path.lost_packets, stats.udp_tx.datagrams, stats.udp_rx.datagrams, stats.path.cwnd
+                            reason,
+                            stats.path.rtt,
+                            stats.path.lost_packets,
+                            stats.udp_tx.datagrams,
+                            stats.udp_rx.datagrams,
+                            stats.path.cwnd
                         );
-                        *reason_health.lock().unwrap() = format!("Underlying QUIC connection closed: {reason:?}");
-                        client_state(ClientState::Reconnecting, format!("Connection closed: {reason:?}"), None);
+                        *reason_health.lock().unwrap() =
+                            format!("Underlying QUIC connection closed: {reason:?}");
+                        client_state(
+                            ClientState::Reconnecting,
+                            format!("Connection closed: {reason:?}"),
+                            None,
+                        );
                         monitor_reconnect.notify_one();
                         break;
                     }
@@ -776,7 +794,10 @@ impl AnetClient {
             active_sessions: result.auth_response.active_sessions,
             allowed_sessions: result.auth_response.allowed_sessions,
             speed_limit_kbps: result.auth_response.speed_limit_kbps.map(|k| k as u64),
-            traffic_consumed_bytes: result.auth_response.traffic_consumed.map(|c| c.max(0) as u64),
+            traffic_consumed_bytes: result
+                .auth_response
+                .traffic_consumed
+                .map(|c| c.max(0) as u64),
             traffic_limit_bytes: result.auth_response.traffic_limit.map(|l| l.max(0) as u64),
             expires_at: result.auth_response.expires_at.clone(),
         });
@@ -849,7 +870,10 @@ impl AnetClient {
                 task.abort();
             }
             sess.shutdown_notify.notify_waiters();
-            if tokio::time::timeout(Duration::from_secs(2), sess.main_task).await.is_err() {
+            if tokio::time::timeout(Duration::from_secs(2), sess.main_task)
+                .await
+                .is_err()
+            {
                 warn!("[Core] Main task did not finish in 2s during cleanup, proceeding");
             }
         }
@@ -867,7 +891,8 @@ impl AnetClient {
         let state = self.session.lock().unwrap();
         if let Some(ref running) = *state {
             info!("[Core] Reconnect requested externally (network switch or watchdog).");
-            *running.disconnect_reason.lock().unwrap() = "External reconnect request (network switch or watchdog)".to_string();
+            *running.disconnect_reason.lock().unwrap() =
+                "External reconnect request (network switch or watchdog)".to_string();
             running.shutdown_notify.notify_waiters();
             running.reconnect_signal.notify_one();
         }
@@ -882,7 +907,7 @@ impl AnetClient {
             state.take()
         };
 
-        if let Some(running) = session {
+        if let Some(mut running) = session {
             info!("[Core] Stopping VPN...");
             status("[Core] Stopping VPN...");
             client_state(ClientState::Stopping, "Stopping VPN", None);
@@ -894,10 +919,16 @@ impl AnetClient {
                 task.abort();
             }
 
-            let _ = running.main_task.await;
-
             if let Some(endpoint) = running.endpoint {
                 endpoint.close(0u32.into(), b"Disconnected by user");
+            }
+
+            if tokio::time::timeout(Duration::from_secs(3), &mut running.main_task)
+                .await
+                .is_err()
+            {
+                running.main_task.abort();
+                let _ = running.main_task.await;
             }
 
             let _ = self.dns_manager.restore_dns(&running.iface_name);

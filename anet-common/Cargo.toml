@@ -18,6 +18,8 @@ log = {workspace = true}
 anyhow = {workspace = true}
 quinn = {workspace = true }
 chacha20poly1305 = {workspace = true}
+kuznyechik = {workspace = true}
+mgm = {workspace = true}
 aes-gcm = "0.10.3"
 aead = { version = "0.5.2", features = ["getrandom"] }
 serde = { workspace = true, features = ["derive"] }

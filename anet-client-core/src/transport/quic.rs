@@ -86,22 +86,19 @@ impl ClientTransport for QuicTransport {
         // Для клиентского соединения выставляем надежный keep-alive (7s) во избежание
         // сброса NAT мобильными операторами/роутерами и стабильный idle timeout (60s),
         // чтобы соединение не рвалось при кратковременном джиттере или потере 1-2 пингов.
-        quic_cfg.keep_alive_interval_seconds = Some(
-            quic_cfg.keep_alive_interval_seconds.unwrap_or(7).min(10)
-        );
-        quic_cfg.idle_timeout_seconds = Some(
-            quic_cfg.idle_timeout_seconds.unwrap_or(60).max(60)
-        );
+        quic_cfg.keep_alive_interval_seconds =
+            Some(quic_cfg.keep_alive_interval_seconds.unwrap_or(7).min(10));
+        quic_cfg.idle_timeout_seconds = Some(quic_cfg.idle_timeout_seconds.unwrap_or(60).max(60));
 
+        let envelope_overhead = self.config.crypto.algorithm.envelope_overhead();
         let transport_config =
-            build_transport_config(&quic_cfg, auth_response.mtu as u16)?;
+            build_transport_config(&quic_cfg, auth_response.mtu as u16, envelope_overhead)?;
 
-        let cipher = Arc::new(Cipher::new(&shared_key));
-        let nonce_prefix: [u8; 4] = auth_response
-            .nonce_prefix
-            .as_slice()
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("Invalid nonce prefix len"))?;
+        let cipher = Arc::new(Cipher::with_algorithm(
+            &shared_key,
+            self.config.crypto.algorithm,
+        )?);
+        let nonce_prefix = auth_response.nonce_prefix.clone();
 
         let anet_socket = Arc::new(AnetUdpSocket::new(
             udp_socket,

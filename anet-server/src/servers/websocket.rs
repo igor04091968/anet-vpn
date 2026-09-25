@@ -29,7 +29,7 @@ async fn upgrade(
 ) -> Result<tokio_tungstenite::WebSocketStream<TcpStream>> {
     let callback = move |request: &Request,
                          mut response: Response|
-                         -> std::result::Result<Response, ErrorResponse> {
+          -> std::result::Result<Response, ErrorResponse> {
         if request.uri().path() != expected_path {
             let mut rejected = ErrorResponse::new(Some("Not Found".to_string()));
             *rejected.status_mut() = StatusCode::NOT_FOUND;
@@ -83,11 +83,11 @@ async fn handle_session(
         if let Some((client_info, _)) = result {
             let assigned_ip = client_info.assigned_ip.clone();
             let (tx_router, mut rx_router) = mpsc::channel::<Bytes>(CHANNEL_BUFFER_SIZE);
-            registry.finalize_client(&assigned_ip, tx_router);
+            registry.finalize_client(&client_info, tx_router);
 
             let cipher = client_info.cipher.clone();
             let sequence = client_info.sequence.clone();
-            let nonce_prefix = client_info.nonce_prefix;
+            let nonce_prefix = client_info.nonce_prefix.clone();
             let padding_step = config.stealth.padding_step;
             let mut ping_timer = Box::pin(tokio::time::sleep(random_ping_interval()));
 
