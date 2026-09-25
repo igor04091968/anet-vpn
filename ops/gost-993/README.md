@@ -1,0 +1,45 @@
+# ANet на gw: рабочий UDP 993
+
+`anet-server2.service` запускает `/opt/anet/anet-server` с конфигом
+`/opt/anet/server22.toml`. Сервис слушает `0.0.0.0:993/UDP`, использует TUN
+`anet-server2` и подсеть `10.22.0.0/24`. В конфиге выбран
+`crypto.algorithm = "kuznyechik-mgm"`: этим алгоритмом защищены рукопожатие
+ANet и внешние пакеты. Внутренний QUIC/TLS остаётся стандартным.
+
+Рабочий профиль Android 9/10 хранится в закрытом репозитории
+`igor04091968/anet-android-private` как
+`profiles/gw-993-gost-stable-client.toml`. APK `1.0.10` опубликован в том же
+закрытом релизе `android9-10-gost-outer-gui-v1.0.10-20260925`.
+
+## Проверка
+
+На gw:
+
+```sh
+systemctl is-active anet-server2
+ss -lun | grep ':993 '
+sudo journalctl -u anet-server2 --since '10 minutes ago' --no-pager
+```
+
+Успешный сеанс содержит `crypto: KuznyechikMgm`. При переключении проверены
+авторизация, ICMP к шлюзу и внешнему адресу, пакет 1280 байт после 40 секунд
+простоя и ноль потерь QUIC. Первые восемь пакетов на `993/UDP` имели маркер
+`ANETGOST1` в обоих направлениях; захват лежит с правами 600 в каталоге
+резервной копии ниже. На Android 10 повторное открытие GUI и работа через
+мобильную сеть ещё требуют проверки на самом телефоне.
+
+## Откат
+
+Предыдущие бинарник и конфиг сохранены на gw в
+`/opt/anet/backups/gost-cutover-20260925T161319Z`. Для возврата к прежнему
+ChaCha-режиму:
+
+```sh
+sudo /opt/anet/backups/gost-cutover-20260925T161319Z/rollback.sh --force
+sudo systemctl is-active anet-server2
+sudo ss -lun | grep ':993 '
+```
+
+После отката клиентам понадобится прежний профиль ChaCha. Тестовый сервис
+`2445/UDP` удалён из systemd; его файлы перенесены в тот же закрытый каталог
+резервной копии и не запускаются.
