@@ -14,6 +14,7 @@ pub struct Model {
     pub name: String,
     pub address: String,
     pub public_key: String,
+    pub crypto_algorithm: String,
     pub quic_port: Option<i32>,
     pub ssh_port: Option<i32>,
     pub vnc_port: Option<i32>,

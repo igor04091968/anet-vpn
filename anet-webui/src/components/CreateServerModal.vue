@@ -16,23 +16,49 @@ const loading = ref(false)
 // Функция для сброса формы к значениям по умолчанию
 const defaultForm = (): CreateServerRequest => ({
   name: '',
-  address: '127.0.0.1', // Заменили dsn на address
+  address: '',
   public_key: '',
-  ssh_user: 'hanyuu',
+  crypto_algorithm: 'chacha20-poly1305',
+  ssh_user: null,
   is_active: true,
-  quic_port: 4519,
-  ssh_port: 822,
-  vnc_port: 56678,
-  websocket_url: 'ws://127.0.0.1:8080/socket',
-  ahttp_url: 'https://your-cdn.some-host.net/api/v2/telemetry',
+  quic_port: null,
+  ssh_port: null,
+  vnc_port: null,
+  websocket_url: null,
+  ahttp_url: null,
 })
 
 const form = ref<CreateServerRequest>(defaultForm())
 
+const normalizePort = (value: unknown): number | null => value === '' || value == null ? null : Number(value)
+
 const handleCreate = async () => {
+  if (!form.value.name.trim() || !form.value.address.trim() || !form.value.public_key.trim()) {
+    alert('Укажите название, адрес и публичный ключ сервера')
+    return
+  }
+  const payload: CreateServerRequest = {
+    ...form.value,
+    quic_port: normalizePort(form.value.quic_port),
+    ssh_port: normalizePort(form.value.ssh_port),
+    vnc_port: normalizePort(form.value.vnc_port),
+    websocket_url: form.value.websocket_url?.trim() || null,
+    ahttp_url: form.value.ahttp_url?.trim() || null,
+    ssh_user: form.value.ssh_user?.trim() || null,
+  }
+  const ports = [payload.quic_port, payload.ssh_port, payload.vnc_port]
+  if (ports.some(port => port != null && (!Number.isInteger(port) || port < 1 || port > 65535))) {
+    alert('Порт должен быть целым числом от 1 до 65535')
+    return
+  }
+  if (!ports.some(port => port != null)
+      && !payload.websocket_url && !payload.ahttp_url) {
+    alert('Укажите хотя бы один порт или URL транспорта')
+    return
+  }
   loading.value = true
   try {
-    await CreateServer(form.value)
+    await CreateServer(payload)
     form.value = defaultForm() // Сбрасываем форму после успеха
     emit('created')            // Сообщаем родителю, что надо обновить список
     show.value = false         // Закрываем модалку
@@ -85,6 +111,14 @@ const close = () => {
               v-model="form.public_key"
               label="Публичный ключ сервера (server_pub_key)"
               placeholder="Из утилиты anet-keygen"
+              variant="filled"
+              class="mb-3"
+          />
+
+          <v-select
+              v-model="form.crypto_algorithm"
+              label="Алгоритм шифрования"
+              :items="[{ title: 'ChaCha20-Poly1305', value: 'chacha20-poly1305' }, { title: 'ГОСТ Кузнечик-MGM', value: 'kuznyechik-mgm' }]"
               variant="filled"
               class="mb-3"
           />

@@ -10,7 +10,7 @@ use crate::api::dto::{
 };
 use crate::crypto::DbEncryptor;
 use crate::entities::{
-    group_node_pools, groups, node_pool_members, node_pools, servers, user_node_pools,
+    group_node_pools, node_pool_members, node_pools, servers, user_node_pools,
     user_servers, users, ProtocolType,
 };
 use crate::route_compiler::toml_string_array;
@@ -220,25 +220,6 @@ impl UsersApi {
         if let Err(e) = new_user.insert(&self.db).await {
             error!("Failed to create user: {}", e);
             return AddUserApiResult::Error(Json("Ошибка записи в БД".to_string()));
-        }
-
-        if let Some(group_id) = req.0.group_id {
-            if let Ok(Some(group)) = groups::Entity::find_by_id(group_id).one(&self.db).await {
-                let now = Utc::now().naive_utc();
-                let date_end = now + chrono::Duration::days(group.duration_days as i64);
-
-                let new_rate = crate::entities::rates::ActiveModel {
-                    id: Set(Uuid::new_v4()),
-                    user_id: Set(user_id),
-                    sessions: Set(group.sessions_limit),
-                    traffic_limit: Set(group.traffic_limit),
-                    speed_limit: Set(group.speed_limit),
-                    date_end: Set(date_end),
-                    created_at: Set(now),
-                    updated_at: Set(now),
-                };
-                let _ = new_rate.insert(&self.db).await;
-            }
         }
 
         if let Some(ids) = &req.0.server_ids {
@@ -725,6 +706,7 @@ impl UsersApi {
 
         let mut group_based_servers_toml: Option<String> = None;
         let mut group_fallback_pub_key: Option<String> = None;
+        let mut group_crypto_algorithm: Option<String> = None;
 
         if let Some(user_group_id) = user_opt.group_id {
             let linked_pool_ids: Vec<Uuid> = group_node_pools::Entity::find()
@@ -865,6 +847,9 @@ impl UsersApi {
                             let weight = member.weight.max(1);
 
                             if emitted.insert((member.pool_id, server.id, member.protocol, dsn.clone())) {
+                                if group_crypto_algorithm.is_none() {
+                                    group_crypto_algorithm = Some(server.crypto_algorithm.clone());
+                                }
                                 if fallback_key.is_empty() {
                                     fallback_key = server.public_key.clone();
                                 }
@@ -882,8 +867,8 @@ impl UsersApi {
                                 );
 
                                 toml_str.push_str(&format!(
-                                    "[[servers]]\nname = \"{}\"\ndsn = \"{}\"\n{}timeout_secs = 8\nserver_pub_key = \"{}\"\ngroup_name = \"{}\"\ngroup_id = \"{}\"\nweight = {}\nweigth = {}\n\n",
-                                    display_name, dsn, ssh_user, server.public_key, pool_name, pool_id, weight, weight
+                                    "[[servers]]\nname = \"{}\"\ndsn = \"{}\"\n{}timeout_secs = 8\nserver_pub_key = \"{}\"\ncrypto_algorithm = \"{}\"\ngroup_name = \"{}\"\ngroup_id = \"{}\"\nweight = {}\nweigth = {}\n\n",
+                                    display_name, dsn, ssh_user, server.public_key, server.crypto_algorithm, pool_name, pool_id, weight, weight
                                 ));
                             }
                         }
@@ -897,8 +882,8 @@ impl UsersApi {
             }
         }
 
-        let (servers_toml, fallback_pub_key) = if let (Some(toml), Some(fb_key)) =
-            (group_based_servers_toml, group_fallback_pub_key)
+        let (servers_toml, fallback_pub_key, crypto_algorithm) = if let (Some(toml), Some(fb_key), Some(algorithm)) =
+            (group_based_servers_toml, group_fallback_pub_key, group_crypto_algorithm)
         {
             info!(
                 "[CONFIG] Generated configuration from server group(s) for user {} (group ID: {:?})",
@@ -913,7 +898,7 @@ impl UsersApi {
                 "# =========================================================================\n",
             );
             header.push_str(&toml);
-            (header, fb_key)
+            (header, fb_key, algorithm)
         } else {
             // Фаллбак на "старый" (текущий) вариант:
             info!(
@@ -955,18 +940,20 @@ impl UsersApi {
             );
 
             let mut fallback_pub_key = String::new();
+            let mut fallback_crypto_algorithm = String::new();
 
             for server in fallback_assigned_servers {
                 if !server.is_active {
                     continue;
                 }
 
-                if fallback_pub_key.is_empty() {
-                    fallback_pub_key = server.public_key.clone();
-                }
-
                 if server.address.trim().is_empty() {
                     continue;
+                }
+
+                if fallback_pub_key.is_empty() {
+                    fallback_pub_key = server.public_key.clone();
+                    fallback_crypto_algorithm = server.crypto_algorithm.clone();
                 }
 
                 let ssh_user = server
@@ -986,8 +973,8 @@ impl UsersApi {
                         format!("{} [{}]", server.name.trim(), protocol.to_uppercase());
 
                     servers_toml.push_str(&format!(
-                        "[[servers]]\nname = \"{}\"\ndsn = \"{}\"\n{}timeout_secs = 8\nserver_pub_key = \"{}\"\n\n",
-                        display_name, dsn, ssh_user, server.public_key
+                        "[[servers]]\nname = \"{}\"\ndsn = \"{}\"\n{}timeout_secs = 8\nserver_pub_key = \"{}\"\ncrypto_algorithm = \"{}\"\n\n",
+                        display_name, dsn, ssh_user, server.public_key, server.crypto_algorithm
                     ));
                 };
 
@@ -1028,8 +1015,14 @@ impl UsersApi {
                 }
             }
 
-            (servers_toml, fallback_pub_key)
+            (servers_toml, fallback_pub_key, fallback_crypto_algorithm)
         };
+
+        if !servers_toml.contains("[[servers]]") {
+            return DownloadConfigResponse::Error(Json(
+                "No active server endpoints available for this user".to_string(),
+            ));
+        }
 
         let template_content = match tokio::fs::read_to_string(&self.client_template_path).await {
             Ok(content) => content,
@@ -1045,6 +1038,13 @@ impl UsersApi {
         };
 
         let mut config_output = template_content;
+        if config_output.contains("[crypto]") {
+            error!("[CONFIG TEMPLATE ERROR] Template already defines [crypto]");
+            return DownloadConfigResponse::Error(Json(
+                "Base configuration template has a conflicting crypto section".to_string(),
+            ));
+        }
+        config_output.push_str(&format!("\n[crypto]\nalgorithm = \"{}\"\n", crypto_algorithm));
         config_output.push_str(&servers_toml);
 
         let final_output = config_output

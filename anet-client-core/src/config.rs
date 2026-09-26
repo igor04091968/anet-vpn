@@ -157,6 +157,10 @@ pub struct ServerConfig {
     // Опциональное переопределение публичного ключа сервера
     pub server_pub_key: Option<String>,
 
+    /// Overrides [crypto].algorithm for this endpoint; older profiles use the global value.
+    #[serde(default)]
+    pub crypto_algorithm: Option<CryptoAlgorithm>,
+
     // Опциональное переопределение пользователя SSH
     pub ssh_user: Option<String>,
 
@@ -190,6 +194,7 @@ impl Default for ServerConfig {
             dsn: String::new(),
             timeout_secs: default_timeout_secs(),
             server_pub_key: None,
+            crypto_algorithm: None,
             ssh_user: None,
             group_name: None,
             group_id: None,
@@ -449,6 +454,7 @@ mod tests {
             dsn: "quic://vpn.example.com:4519".to_string(),
             timeout_secs: 10,
             server_pub_key: None,
+            crypto_algorithm: None,
             ssh_user: None,
             group_name: None,
             group_id: None,
@@ -476,6 +482,7 @@ mod tests {
             dsn: "wss://gm1.anet-project.org/socket".to_string(),
             timeout_secs: 10,
             server_pub_key: None,
+            crypto_algorithm: None,
             ssh_user: None,
 
             group_name: None,

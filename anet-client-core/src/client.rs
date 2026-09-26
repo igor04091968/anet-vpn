@@ -341,6 +341,10 @@ impl AnetClient {
         let mut config_clone = self.config.clone();
         config_clone.sanitize()?;
 
+        config_clone.crypto.algorithm = server
+            .crypto_algorithm
+            .unwrap_or(config_clone.crypto.algorithm);
+
         let transport = create_transport(&config_clone, server)?;
         let conn_timeout = Duration::from_secs(server.timeout_secs.max(15));
 

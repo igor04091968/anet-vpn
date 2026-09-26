@@ -15,6 +15,14 @@ pub struct ServersApi {
     pub db: DatabaseConnection,
 }
 
+fn valid_crypto_algorithm(value: &str) -> bool {
+    matches!(value, "chacha20-poly1305" | "kuznyechik-mgm")
+}
+
+fn valid_port(port: i32) -> bool {
+    (1..=65535).contains(&port)
+}
+
 
 fn validate_server_urls(
     address: &str,
@@ -81,13 +89,29 @@ impl ServersApi {
                 poem::http::StatusCode::BAD_REQUEST,
             ));
         }
+        if [req.0.quic_port, req.0.ssh_port, req.0.vnc_port]
+            .into_iter().flatten().any(|port| !valid_port(port)) {
+            return Err(poem::Error::from_string(
+                "Порт должен быть от 1 до 65535",
+                poem::http::StatusCode::BAD_REQUEST,
+            ));
+        }
+
+        let crypto_algorithm = req.0.crypto_algorithm.as_deref().unwrap_or("chacha20-poly1305");
+        if !valid_crypto_algorithm(crypto_algorithm) {
+            return Err(poem::Error::from_string(
+                "Неподдерживаемый алгоритм шифрования",
+                poem::http::StatusCode::BAD_REQUEST,
+            ));
+        }
 
         let server_id = Uuid::new_v4();
         let new_server = servers::ActiveModel {
             id: Set(server_id),
             name: Set(req.0.name.clone()),
-            address: Set(String::new()),
+            address: Set(req.0.address.clone()),
             public_key: Set(req.0.public_key.clone()),
+            crypto_algorithm: Set(crypto_algorithm.to_string()),
             quic_port: Set(req.0.quic_port),
             ssh_port: Set(req.0.ssh_port),
             vnc_port: Set(req.0.vnc_port),
@@ -106,6 +130,7 @@ impl ServersApi {
                 name: saved.name,
                 address: saved.address,
                 public_key: saved.public_key,
+                crypto_algorithm: saved.crypto_algorithm,
                 quic_port: saved.quic_port,
                 ssh_port: saved.ssh_port,
                 vnc_port: saved.vnc_port,
@@ -138,6 +163,17 @@ impl ServersApi {
         if let Err(err) = validate_server_urls(&addr, &ws_url, &ahttp_url) {
             return crate::api::dto::UpdateServerApiResult::BadRequest(Json(err));
         }
+        if req.0.crypto_algorithm.as_deref().is_some_and(|value| !valid_crypto_algorithm(value)) {
+            return crate::api::dto::UpdateServerApiResult::BadRequest(Json(
+                "Неподдерживаемый алгоритм шифрования".to_string(),
+            ));
+        }
+        if [req.0.quic_port, req.0.ssh_port, req.0.vnc_port]
+            .into_iter().flatten().flatten().any(|port| !valid_port(port)) {
+            return crate::api::dto::UpdateServerApiResult::BadRequest(Json(
+                "Порт должен быть от 1 до 65535".to_string(),
+            ));
+        }
 
         let server_model = match servers::Entity::find_by_id(id.0).one(&self.db).await {
             Ok(Some(s)) => s,
@@ -160,6 +196,10 @@ impl ServersApi {
         }
         if let Some(pub_key) = req.0.public_key {
             active_model.public_key = Set(pub_key);
+            changed = true;
+        }
+        if let Some(crypto_algorithm) = req.0.crypto_algorithm {
+            active_model.crypto_algorithm = Set(crypto_algorithm);
             changed = true;
         }
         if let Some(quic_port) = req.0.quic_port {
@@ -199,6 +239,7 @@ impl ServersApi {
                     name: saved.name,
                     address: saved.address,
                     public_key: saved.public_key,
+                    crypto_algorithm: saved.crypto_algorithm,
                     quic_port: saved.quic_port,
                     ssh_port: saved.ssh_port,
                     vnc_port: saved.vnc_port,
@@ -217,6 +258,7 @@ impl ServersApi {
                 name: server_model.name,
                 address: server_model.address,
                 public_key: server_model.public_key,
+                crypto_algorithm: server_model.crypto_algorithm,
                 quic_port: server_model.quic_port,
                 ssh_port: server_model.ssh_port,
                 vnc_port: server_model.vnc_port,
@@ -269,6 +311,7 @@ impl ServersApi {
                         name: s.name,
                         address: s.address,
                         public_key: s.public_key,
+                        crypto_algorithm: s.crypto_algorithm,
                         quic_port: s.quic_port,
                         ssh_port: s.ssh_port,
                         vnc_port: s.vnc_port,
