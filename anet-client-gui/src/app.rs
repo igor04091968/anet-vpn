@@ -2445,10 +2445,7 @@ impl eframe::App for ANetApp {
                             }
                     );
 
-                    #[cfg(target_os = "windows")]
                     let center_width = (ui.available_width() - 60.0).max(0.0);
-                    #[cfg(not(target_os = "windows"))]
-                    let center_width = ui.available_width();
 
                     ui.allocate_ui_with_layout(
                         egui::vec2(center_width, ui.available_height()),
