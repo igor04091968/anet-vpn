@@ -24,7 +24,10 @@ Auth backend принимает настройки доставки из лок�
 - `TELEGRAM_BOT_TOKEN` — токен отдельного Telegram-бота. Не добавляйте его в Git,
   клиентские конфиги или сообщения.
 - `ANET_PANEL_PUBLIC_URL` — внешний HTTPS-адрес панели без завершающего `/`.
-- `ANET_CLIENT_DOWNLOAD_URL` — HTTPS-ссылка на страницу или пакет релиза клиента.
+- `ANET_CLIENT_DOWNLOAD_URL` — HTTPS-ссылка на приложение, отправляемая клиенту
+  через Telegram. Для Android используется стабильное имя APK в публичном
+  репозитории ANet: `https://github.com/igor04091968/anet-android/releases/latest/download/ANet-Android9-10.apk`.
+  При выпуске новой версии прикладывайте APK под тем же именем к latest-релизу.
 - `HTTPS_PROXY` — необязательный proxy, доступный из контейнера `anet-auth`.
   `127.0.0.1` внутри контейнера указывает на сам контейнер, а не на хост.
 
