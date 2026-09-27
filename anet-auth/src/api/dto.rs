@@ -339,6 +339,7 @@ pub struct VpnUserDto {
     pub pool_ids: Vec<uuid::Uuid>,
     pub route_map_id: Option<uuid::Uuid>,
     pub group_id: Option<uuid::Uuid>,
+    pub telegram_chat_id: Option<String>,
 }
 
 #[derive(Object)]
@@ -367,6 +368,22 @@ pub enum GetUserApiResult {
     NotFound(Json<String>),
     #[oai(status = 500)]
     Error(Json<String>),
+}
+
+#[derive(ApiResponse)]
+pub enum TelegramDeliveryResponse {
+    #[oai(status = 200)]
+    Ok(Json<String>),
+    #[oai(status = 400)]
+    BadRequest(Json<String>),
+    #[oai(status = 401)]
+    Unauthorized(Json<String>),
+    #[oai(status = 404)]
+    NotFound(Json<String>),
+    #[oai(status = 502)]
+    DeliveryFailed(Json<String>),
+    #[oai(status = 503)]
+    NotConfigured(Json<String>),
 }
 
 #[derive(Object)]
@@ -410,6 +427,8 @@ pub struct UpdateUserRequest {
     pub clear_route_map: Option<bool>,
     pub group_id: Option<uuid::Uuid>,
     pub clear_group: Option<bool>,
+    pub telegram_chat_id: Option<String>,
+    pub clear_telegram_chat_id: Option<bool>,
 }
 
 #[derive(Object, Debug, Clone, Serialize, Deserialize)]

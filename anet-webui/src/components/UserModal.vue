@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { watch, computed } from 'vue'
+import { watch, computed, ref } from 'vue'
 import { useAppMessage } from '@/composables/useAppMessage'
 
 import UserForm from './UserForm.vue'
@@ -8,6 +8,7 @@ import RateCreateForm from './RateCreateForm.vue'
 
 import { useUser } from '@/composables/useUser'
 import { useRate } from '@/composables/useRate'
+import { SendTelegramLinks } from '@/api/users'
 
 const show = defineModel<boolean>()
 
@@ -24,6 +25,7 @@ const { user, loading, regenerating, loadUser, saveUser, regenerate } = useUser(
 const { saving, saveRate, createRate } = useRate(user)
 
 const message = useAppMessage()
+const telegramSending = ref(false)
 
 // Прямая ссылка на скачивание client.toml
 const directConfigLink = computed(() => {
@@ -72,6 +74,20 @@ const copyDirectLink = () => {
 const copyQrPageLink = () => {
   if (!qrPageLink.value) return
   copyToClipboard(qrPageLink.value, 'Ссылка на страницу с QR-кодом скопирована!')
+}
+
+const sendTelegramLinks = async () => {
+  if (!user.value?.id || !user.value.telegram_chat_id) return
+  telegramSending.value = true
+  try {
+    await saveUser()
+    await SendTelegramLinks(user.value.id)
+    message.success('Конфигурация и ссылка на загрузку отправлены в Telegram')
+  } catch (error: any) {
+    message.error(error?.response?.data || 'Не удалось отправить сообщение в Telegram')
+  } finally {
+    telegramSending.value = false
+  }
 }
 
 watch(
@@ -146,6 +162,28 @@ const handleSaveUser = async () => {
               <v-btn color="primary" variant="tonal" @click="copyDirectLink">Copy</v-btn>
             </template>
           </v-text-field>
+
+          <v-text-field
+              v-model="user.telegram_chat_id"
+              label="Telegram chat ID клиента"
+              hint="Введите числовой ID клиента (его можно узнать у @userinfobot); клиент должен открыть этот бот и нажать Start"
+              persistent-hint
+              inputmode="numeric"
+              variant="outlined"
+              density="compact"
+              class="mt-4"
+          />
+          <v-btn
+              color="primary"
+              variant="tonal"
+              block
+              prepend-icon="mdi-send"
+              :disabled="!user.telegram_chat_id"
+              :loading="telegramSending"
+              @click="sendTelegramLinks"
+          >
+            Отправить конфигурацию и ссылку на обновление в Telegram
+          </v-btn>
 
           <v-text-field
               readonly

@@ -18,12 +18,19 @@ services:
   anet-auth:
     image: ghcr.io/zerotworu/anet-auth:latest
     container_name: anet-webui-auth
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/anet
       BIND_TO: 0.0.0.0:3000
       AUTH_BACKEND_KEY: ${AUTH_BACKEND_KEY}
       JWT_SECRET: ${JWT_SECRET}
       CLIENT_TEMPLATE_PATH: /opt/anet/client_template.toml
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      ANET_PANEL_PUBLIC_URL: ${ANET_PANEL_PUBLIC_URL:-}
+      ANET_CLIENT_DOWNLOAD_URL: ${ANET_CLIENT_DOWNLOAD_URL:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,postgres}
     volumes:
       - ./client_template.toml:/opt/anet/client_template.toml:ro
     depends_on:

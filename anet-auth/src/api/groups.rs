@@ -247,6 +247,7 @@ impl GroupsApi {
                 pool_ids: Vec::new(),         
                 route_map_id: m.route_map_id,  
                 group_id: m.group_id,
+                telegram_chat_id: m.telegram_chat_id,
             });
         }
 

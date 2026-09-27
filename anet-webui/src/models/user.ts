@@ -17,6 +17,7 @@ export type User = {
   pool_ids: string[]
   route_map_id: string | null
   group_id: string | null
+  telegram_chat_id: string | null
 }
 
 export type UpdateUserRequest = {
@@ -29,6 +30,8 @@ export type UpdateUserRequest = {
   clear_route_map?: boolean
   group_id?: string
   clear_group?: boolean
+  telegram_chat_id?: string | null
+  clear_telegram_chat_id?: boolean
 }
 
 export type RegenerateUserRequest = {

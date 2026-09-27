@@ -6,7 +6,7 @@ use crate::api::dto::{
     AddRateApiResult, AddRateRequest, AddUserApiResult, AddUserRequest, AddUserResponse,
     AdminToken, DownloadConfigResponse, GetUserApiResult, GetUsersResponse, PaginatedUsers,
     QrPageResponse, RateDto, RegenerateUserApiResult, RegenerateUserResponse, UpdateRateApiResult,
-    UpdateRateRequest, UpdateUserApiResult, UpdateUserRequest, VpnUserDto,
+    UpdateRateRequest, UpdateUserApiResult, UpdateUserRequest, VpnUserDto, TelegramDeliveryResponse,
 };
 use crate::crypto::DbEncryptor;
 use crate::entities::{
@@ -30,6 +30,71 @@ pub struct UsersApi {
 
 #[OpenApi]
 impl UsersApi {
+
+    /// Отправить клиенту в Telegram конфигурацию и ссылку на загрузку клиента.
+    #[oai(path = "/user/:id/telegram/send", method = "post")]
+    async fn send_telegram_links(
+        &self,
+        auth: AdminToken,
+        id: poem_openapi::param::Path<Uuid>,
+    ) -> TelegramDeliveryResponse {
+        if let Err(reason) = validate_admin_session(&self.db, &auth.0.token).await {
+            return TelegramDeliveryResponse::Unauthorized(Json(reason));
+        }
+
+        let user = match users::Entity::find_by_id(id.0).one(&self.db).await {
+            Ok(Some(user)) => user,
+            Ok(None) => return TelegramDeliveryResponse::NotFound(Json("Клиент не найден".into())),
+            Err(_) => return TelegramDeliveryResponse::DeliveryFailed(Json("Не удалось прочитать профиль клиента".into())),
+        };
+        if !user.is_active {
+            return TelegramDeliveryResponse::BadRequest(Json("Нельзя отправить данные неактивному клиенту".into()));
+        }
+        let Some(chat_id) = user.telegram_chat_id else {
+            return TelegramDeliveryResponse::BadRequest(Json("Сначала укажите Telegram chat ID и сохраните профиль".into()));
+        };
+        let (Ok(bot_token), Ok(panel_url), Ok(download_url)) = (
+            std::env::var("TELEGRAM_BOT_TOKEN"),
+            std::env::var("ANET_PANEL_PUBLIC_URL"),
+            std::env::var("ANET_CLIENT_DOWNLOAD_URL"),
+        ) else {
+            return TelegramDeliveryResponse::NotConfigured(Json("Telegram-отправка не настроена в окружении панели".into()));
+        };
+        let panel_url = panel_url.trim_end_matches('/');
+        if !panel_url.starts_with("https://") || !download_url.starts_with("https://") || bot_token.trim().is_empty() {
+            return TelegramDeliveryResponse::NotConfigured(Json("Для Telegram требуются HTTPS-ссылки и токен бота".into()));
+        }
+        let config_url = format!("{panel_url}/api/v1/config/{}", user.id);
+        let display_name = user.uid.as_deref().filter(|name| !name.trim().is_empty()).unwrap_or("клиент");
+        let text = format!(
+            "Здравствуйте, {display_name}!\n\nКонфигурация ANet: {config_url}\nСкачать или обновить приложение: {download_url}"
+        );
+        let endpoint = format!("https://api.telegram.org/bot{}/sendMessage", bot_token.trim());
+        let result = match reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(12))
+            .build()
+        {
+            Ok(client) => client.post(endpoint)
+                .json(&serde_json::json!({
+                    "chat_id": chat_id,
+                    "text": text,
+                    "disable_web_page_preview": true
+                }))
+                .send()
+                .await,
+            Err(_) => return TelegramDeliveryResponse::DeliveryFailed(Json("Не удалось создать Telegram HTTP-клиент".into())),
+        };
+        match result {
+            Ok(response) if response.status().is_success() => {
+                match response.json::<serde_json::Value>().await {
+                    Ok(body) if body.get("ok").and_then(|v| v.as_bool()) == Some(true) =>
+                        TelegramDeliveryResponse::Ok(Json("Сообщение отправлено в Telegram".into())),
+                    _ => TelegramDeliveryResponse::DeliveryFailed(Json("Telegram отклонил отправку. Проверьте chat ID и что клиент запускал бота командой /start".into())),
+                }
+            }
+            _ => TelegramDeliveryResponse::DeliveryFailed(Json("Telegram API недоступен или отклонил отправку".into())),
+        }
+    }
 
     /// Получить список всех пользователей (с поиском, фильтром групп и сортировкой)
     #[oai(path = "/users", method = "get")]
@@ -123,6 +188,7 @@ impl UsersApi {
                 pool_ids: Vec::new(),
                 route_map_id: m.route_map_id,
                 group_id: m.group_id,
+                telegram_chat_id: m.telegram_chat_id,
             });
         }
 
@@ -180,6 +246,7 @@ impl UsersApi {
             pool_ids: p_ids,
             route_map_id,
             group_id: result.0.group_id,
+            telegram_chat_id: result.0.telegram_chat_id,
         }))
     }
 
@@ -215,6 +282,7 @@ impl UsersApi {
             public_key: Set(Some(encrypted_public_key)),
             route_map_id: Set(req.0.route_map_id),
             group_id: Set(req.0.group_id),
+            telegram_chat_id: Set(None),
         };
 
         if let Err(e) = new_user.insert(&self.db).await {
@@ -298,6 +366,17 @@ impl UsersApi {
             editable_user.is_active = Set(activation_flag);
             something_changed = true;
         }
+        if req.0.clear_telegram_chat_id.unwrap_or(false) {
+            editable_user.telegram_chat_id = Set(None);
+            something_changed = true;
+        } else if let Some(chat_id) = req.0.telegram_chat_id {
+            let chat_id = chat_id.trim();
+            if chat_id.is_empty() || chat_id.len() > 32 || chat_id.parse::<i64>().is_err() {
+                return UpdateUserApiResult::BadRequest(Json("Telegram chat ID должен быть числом".to_string()));
+            }
+            editable_user.telegram_chat_id = Set(Some(chat_id.to_owned()));
+            something_changed = true;
+        }
         if let Some(static_ip) = req.0.static_ip {
             editable_user.static_ip = Set(Some(static_ip));
             something_changed = true;
@@ -373,6 +452,7 @@ impl UsersApi {
                         pool_ids: p_ids,
                         route_map_id,
                         group_id: updated_data.group_id,
+                        telegram_chat_id: updated_data.telegram_chat_id,
                     }));
                 }
                 Err(e) => {
@@ -414,6 +494,7 @@ impl UsersApi {
             pool_ids: p_ids,
             route_map_id,
             group_id: editable_user.group_id.unwrap(),
+            telegram_chat_id: editable_user.telegram_chat_id.unwrap(),
         }))
     }
 
