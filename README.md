@@ -32,6 +32,10 @@
 
 Как мог накидал: [Документацию](./contrib/docs/anet.ru.md)
 
+Архитектура отдельного iOS-клиента зафиксирована в
+[ADR-0001](./docs/decisions/ADR-0001-ios-client.md). iOS-клиент пока не
+реализован.
+
 А это уже полностью нейронка: [AUTH HTTP API](./contrib/docs/http.api.ru.md)
 
 ## Сборка
