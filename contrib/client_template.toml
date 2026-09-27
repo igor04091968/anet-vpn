@@ -28,7 +28,7 @@ exclude_route_for = {{EXCLUDE_ROUTE_FOR}}
 dns_server_list = ["1.1.1.1", "8.8.8.8"]
 
 # Ссылка для скачивания авто-обновлений клиента
-update_url = "https://api.github.com/repos/ZeroTworu/anet/releases/latest"
+update_url = "https://api.github.com/repos/igor04091968/anet-vpn/releases/latest"
 
 [keys]
 # Эти параметры бэкенд дешифрует и заполнит автоматически при скачивании

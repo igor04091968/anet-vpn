@@ -48,8 +48,21 @@ pub struct MainConfig {
     pub update_url: String,
 }
 
+pub const DEFAULT_UPDATE_URL: &str =
+    "https://api.github.com/repos/igor04091968/anet-vpn/releases/latest";
+
+pub fn resolve_update_url(configured: &str) -> String {
+    if configured.is_empty()
+        || configured == "https://api.github.com/repos/ZeroTworu/anet/releases/latest"
+    {
+        DEFAULT_UPDATE_URL.to_string()
+    } else {
+        configured.to_string()
+    }
+}
+
 fn default_update_url() -> String {
-    "https://api.github.com/repos/ZeroTworu/anet/releases/latest".to_string()
+    DEFAULT_UPDATE_URL.to_string()
 }
 
 impl Default for MainConfig {

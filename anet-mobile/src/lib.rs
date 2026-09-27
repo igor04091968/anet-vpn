@@ -459,17 +459,12 @@ pub extern "system" fn Java_org_alco_anet_MainActivity_checkUpdates(
     let update_url = if !config_toml.is_empty() {
         match toml::from_str::<CoreConfig>(&config_toml) {
             Ok(c) => {
-                let url = c.main.update_url.clone();
-                if url.is_empty() {
-                    "https://api.github.com/repos/ZeroTworu/anet/releases/latest".to_string()
-                } else {
-                    url
-                }
+                anet_client_core::config::resolve_update_url(&c.main.update_url)
             },
-            Err(_) => "https://api.github.com/repos/ZeroTworu/anet/releases/latest".to_string(),
+            Err(_) => "https://api.github.com/repos/igor04091968/anet-vpn/releases/latest".to_string(),
         }
     } else {
-        "https://api.github.com/repos/ZeroTworu/anet/releases/latest".to_string()
+        "https://api.github.com/repos/igor04091968/anet-vpn/releases/latest".to_string()
     };
 
     let rt = {

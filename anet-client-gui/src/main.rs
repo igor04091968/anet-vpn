@@ -51,9 +51,10 @@ fn main() -> Result<(), eframe::Error> {
 let options = eframe::NativeOptions {
     viewport: egui::ViewportBuilder::default()
         .with_title(window_title)
-        .with_inner_size([400.0, 720.0])
+        .with_inner_size([1000.0, 820.0])
+        .with_min_inner_size([680.0, 640.0])
         .with_icon(icon)
-        .with_resizable(false)
+        .with_resizable(true)
         .with_decorations(false) // <--- Отключаем стандартную рамку и шапку ОС
         .with_transparent(true),  // Опционально: если нужны скругленные углы окна
     ..Default::default()

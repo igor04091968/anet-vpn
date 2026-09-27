@@ -1237,9 +1237,11 @@ impl ANetApp {
 
     fn check_for_updates(&mut self) {
         let update_url = if let Some(client) = lock_ignore_poison(&self.shared).client.as_ref() {
-            client.get_config().main.update_url.clone()
+            anet_client_core::config::resolve_update_url(
+                &client.get_config().main.update_url,
+            )
         } else {
-            "https://api.github.com/repos/ZeroTworu/anet/releases/latest".to_string()
+            "https://api.github.com/repos/igor04091968/anet-vpn/releases/latest".to_string()
         };
 
         self.update_status = UpdateStatus::Checking;
@@ -1979,7 +1981,7 @@ impl eframe::App for ANetApp {
                         ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
                         let available_height = 38.0;
 
-                        let left_width = ui.available_width() - 80.0;
+                        let left_width = ui.available_width() - 120.0;
                         let left_rect = egui::Rect::from_min_size(
                             rect.min + egui::vec2(6.0, 0.0),
                             egui::vec2(left_width, available_height)
@@ -2026,8 +2028,8 @@ impl eframe::App for ANetApp {
                         });
 
                         let right_rect = egui::Rect::from_min_size(
-                            rect.right_top() - egui::vec2(80.0, 0.0),
-                            egui::vec2(80.0, available_height)
+                            rect.right_top() - egui::vec2(120.0, 0.0),
+                            egui::vec2(120.0, available_height)
                         );
 
                         ui.allocate_ui_at_rect(right_rect, |ui| {
@@ -2060,6 +2062,58 @@ impl eframe::App for ANetApp {
 
                                 if close_response.clicked() {
                                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                }
+
+                                let (maximize_rect, maximize_response) = ui.allocate_exact_size(
+                                    size,
+                                    egui::Sense::click()
+                                );
+
+                                if maximize_response.hovered() {
+                                    ui.painter().rect_filled(
+                                        maximize_rect,
+                                        0.0,
+                                        egui::Color32::from_rgb(98, 98, 98)
+                                    );
+                                }
+
+                                let maximized = ctx.input(|input| {
+                                    input.viewport().maximized.unwrap_or(false)
+                                });
+                                let icon_rect = egui::Rect::from_center_size(
+                                    maximize_rect.center(),
+                                    egui::vec2(12.0, 12.0)
+                                );
+                                let icon_stroke = egui::Stroke::new(1.4, white_color);
+                                if maximized {
+                                    let back_rect = icon_rect.translate(egui::vec2(2.0, -2.0));
+                                    ui.painter().rect_stroke(
+                                        back_rect,
+                                        0.0,
+                                        icon_stroke,
+                                        egui::StrokeKind::Inside
+                                    );
+                                    let front_rect = icon_rect.translate(egui::vec2(-2.0, 2.0));
+                                    ui.painter().rect_filled(front_rect, 0.0, title_bg);
+                                    ui.painter().rect_stroke(
+                                        front_rect,
+                                        0.0,
+                                        icon_stroke,
+                                        egui::StrokeKind::Inside
+                                    );
+                                } else {
+                                    ui.painter().rect_stroke(
+                                        icon_rect,
+                                        0.0,
+                                        icon_stroke,
+                                        egui::StrokeKind::Inside
+                                    );
+                                }
+
+                                if maximize_response.clicked() {
+                                    ctx.send_viewport_cmd(
+                                        egui::ViewportCommand::Maximized(!maximized)
+                                    );
                                 }
 
                                 let (min_rect, min_response) = ui.allocate_exact_size(
