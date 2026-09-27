@@ -33,8 +33,9 @@
 Как мог накидал: [Документацию](./contrib/docs/anet.ru.md)
 
 Архитектура отдельного iOS-клиента зафиксирована в
-[ADR-0001](./docs/decisions/ADR-0001-ios-client.md). iOS-клиент пока не
-реализован.
+[ADR-0001](./docs/decisions/ADR-0001-ios-client.md). Swift-приложение, Packet
+Tunnel Extension и Rust FFI сборка находятся в разработке; инструкции по
+[сборке и публикации](./anet-ios/README.md) описывают текущие ограничения.
 
 А это уже полностью нейронка: [AUTH HTTP API](./contrib/docs/http.api.ru.md)
 

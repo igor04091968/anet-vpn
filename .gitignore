@@ -42,3 +42,6 @@ private/
 *.log
 *.apk
 *.aab
+anet-ios/ANetVPN/DerivedData/
+**/*.xcuserstate
+!anet-ios/rust/anet-ios-ffi/build-rust.sh

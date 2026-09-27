@@ -508,6 +508,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "anet-ios-ffi"
+version = "0.1.0"
+dependencies = [
+ "anet-client-core",
+ "anet-common",
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml 0.9.8",
+]
+
+[[package]]
 name = "anet-keygen"
 version = "0.1.0"
 dependencies = [
