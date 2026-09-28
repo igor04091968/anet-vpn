@@ -17,6 +17,7 @@ const navigation = [
   { label: 'Node Pools', path: '/pools', icon: 'mdi-lan', group: 'Management' },
   { label: 'Route Maps', path: '/route-maps', icon: 'mdi-map-marker-path', group: 'Management' },
   { label: 'User Groups', path: '/groups', icon: 'mdi-wallet-membership', group: 'Management' },
+  { label: 'Настройки', path: '/settings', icon: 'mdi-cog-outline', group: 'Management' },
   { label: 'Traffic', path: '/statistics', icon: 'mdi-chart-line', group: 'Observability' },
 ]
 const groups = computed(() => [...new Set(navigation.map(item => item.group))])

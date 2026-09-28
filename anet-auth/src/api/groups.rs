@@ -245,7 +245,7 @@ impl GroupsApi {
                 static_ip: m.static_ip.map(|ip| ip.parse().ok()).flatten(),
                 server_ids: Vec::new(),        
                 pool_ids: Vec::new(),         
-                route_map_id: m.route_map_id,  
+                route_map_id: m.route_map_id,
                 group_id: m.group_id,
                 telegram_chat_id: m.telegram_chat_id,
             });
