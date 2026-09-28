@@ -11,7 +11,7 @@ use crate::api::dto::{
 use crate::crypto::DbEncryptor;
 use crate::entities::{
     group_node_pools, node_pool_members, node_pools, servers, user_node_pools,
-    user_servers, users, ProtocolType,
+    telegram_settings, user_servers, users, ProtocolType,
 };
 use crate::route_compiler::toml_string_array;
 use chrono::{NaiveDateTime, Utc};
@@ -26,6 +26,27 @@ use uuid::Uuid;
 pub struct UsersApi {
     pub db: DatabaseConnection,
     pub client_template_path: String,
+}
+
+async fn telegram_delivery_bot_token(db: &DatabaseConnection) -> Result<Option<String>, ()> {
+    let settings = telegram_settings::Entity::find_by_id(1)
+        .one(db)
+        .await
+        .map_err(|_| ())?;
+    if let Some(ciphertext) = settings
+        .and_then(|settings| settings.bot_token_ciphertext)
+        .filter(|value| !value.is_empty())
+    {
+        return DbEncryptor::new()
+            .decrypt(&ciphertext)
+            .map(Some)
+            .map_err(|_| ());
+    }
+
+    Ok(std::env::var("TELEGRAM_BOT_TOKEN")
+        .ok()
+        .map(|token| token.trim().to_owned())
+        .filter(|token| !token.is_empty()))
 }
 
 #[OpenApi]
@@ -53,15 +74,18 @@ impl UsersApi {
         let Some(chat_id) = user.telegram_chat_id else {
             return TelegramDeliveryResponse::BadRequest(Json("Сначала укажите Telegram chat ID и сохраните профиль".into()));
         };
-        let (Ok(bot_token), Ok(panel_url), Ok(download_url)) = (
-            std::env::var("TELEGRAM_BOT_TOKEN"),
+        let bot_token = match telegram_delivery_bot_token(&self.db).await {
+            Ok(Some(token)) => token,
+            _ => return TelegramDeliveryResponse::NotConfigured(Json("Токен Telegram-бота не настроен в панели или окружении".into())),
+        };
+        let (Ok(panel_url), Ok(download_url)) = (
             std::env::var("ANET_PANEL_PUBLIC_URL"),
             std::env::var("ANET_CLIENT_DOWNLOAD_URL"),
         ) else {
             return TelegramDeliveryResponse::NotConfigured(Json("Telegram-отправка не настроена в окружении панели".into()));
         };
         let panel_url = panel_url.trim_end_matches('/');
-        if !panel_url.starts_with("https://") || !download_url.starts_with("https://") || bot_token.trim().is_empty() {
+        if !panel_url.starts_with("https://") || !download_url.starts_with("https://") {
             return TelegramDeliveryResponse::NotConfigured(Json("Для Telegram требуются HTTPS-ссылки и токен бота".into()));
         }
         let config_url = format!("{panel_url}/api/v1/config/{}", user.id);
