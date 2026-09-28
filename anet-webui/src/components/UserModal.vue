@@ -9,6 +9,7 @@ import RateCreateForm from './RateCreateForm.vue'
 import { useUser } from '@/composables/useUser'
 import { useRate } from '@/composables/useRate'
 import { SendTelegramLinks } from '@/api/users'
+import { CompleteUserTelegramLink, CreateUserTelegramLink } from '@/api/telegram'
 
 const show = defineModel<boolean>()
 
@@ -26,6 +27,9 @@ const { saving, saveRate, createRate } = useRate(user)
 
 const message = useAppMessage()
 const telegramSending = ref(false)
+const telegramLinking = ref(false)
+const telegramChecking = ref(false)
+const telegramLink = ref('')
 const DEFAULT_PUBLIC_PANEL_URL = 'https://anet.vpn-rus.top'
 
 const panelBaseUrl = (() => {
@@ -113,6 +117,38 @@ const sendTelegramLinks = async () => {
   }
 }
 
+const createTelegramLink = async () => {
+  if (!user.value?.id) return
+  telegramLinking.value = true
+  try {
+    await saveUser()
+    const result = await CreateUserTelegramLink(user.value.id)
+    telegramLink.value = result.url
+    copyToClipboard(result.url, 'Персональная ссылка на привязку скопирована')
+  } catch (error: any) {
+    message.error(error?.response?.data || 'Не удалось создать ссылку привязки')
+  } finally {
+    telegramLinking.value = false
+  }
+}
+
+const checkTelegramLink = async () => {
+  if (!user.value?.id) return
+  telegramChecking.value = true
+  try {
+    const result = await CompleteUserTelegramLink(user.value.id)
+    message[result.linked ? 'success' : 'info'](result.message)
+    if (result.linked) {
+      await loadUser(user.value.id)
+      telegramLink.value = ''
+    }
+  } catch (error: any) {
+    message.error(error?.response?.data || 'Не удалось проверить привязку')
+  } finally {
+    telegramChecking.value = false
+  }
+}
+
 watch(
     () => props.userId,
     (id) => {
@@ -186,16 +222,34 @@ const handleSaveUser = async () => {
             </template>
           </v-text-field>
 
+          <div class="text-subtitle-2 mt-5 mb-2">Telegram клиента</div>
+          <v-alert v-if="user.telegram_chat_id" type="success" variant="tonal" density="compact" class="mb-3">
+            Telegram уже привязан. При необходимости можно привязать другой аккаунт.
+          </v-alert>
+          <v-alert v-else type="info" variant="tonal" density="compact" class="mb-3">
+            Создайте персональную ссылку и отправьте её клиенту. Клиенту нужно открыть её и нажать «Запустить».
+          </v-alert>
           <v-text-field
-              v-model="user.telegram_chat_id"
-              label="Telegram chat ID клиента"
-              hint="Введите числовой ID клиента (его можно узнать у @userinfobot); клиент должен открыть этот бот и нажать Start"
-              persistent-hint
-              inputmode="numeric"
+              v-if="telegramLink"
+              readonly
+              :model-value="telegramLink"
+              label="Персональная ссылка, действует 20 минут"
               variant="outlined"
               density="compact"
-              class="mt-4"
-          />
+              class="mb-2"
+          >
+            <template #append>
+              <v-btn color="primary" variant="tonal" @click="copyToClipboard(telegramLink, 'Ссылка скопирована')">Копировать</v-btn>
+            </template>
+          </v-text-field>
+          <div class="d-flex flex-wrap ga-2 mb-3">
+            <v-btn color="secondary" variant="tonal" prepend-icon="mdi-link-variant" :loading="telegramLinking" @click="createTelegramLink">
+              {{ user.telegram_chat_id ? 'Создать ссылку для перепривязки' : 'Создать ссылку привязки' }}
+            </v-btn>
+            <v-btn v-if="telegramLink" color="success" variant="tonal" prepend-icon="mdi-account-check" :loading="telegramChecking" @click="checkTelegramLink">
+              Проверить привязку
+            </v-btn>
+          </div>
           <v-btn
               color="primary"
               variant="tonal"

@@ -18,6 +18,7 @@ pub mod user_servers;
 pub mod protocol_type;
 pub mod telegram_audit_events;
 pub mod telegram_settings;
+pub mod telegram_link_requests;
 pub mod groups;
 pub mod group_node_pools;
 

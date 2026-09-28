@@ -1,13 +1,14 @@
 use crate::api::api::validate_admin_session;
 use crate::api::dto::AdminToken;
 use crate::crypto::DbEncryptor;
-use crate::entities::{telegram_audit_events, telegram_settings};
-use chrono::Utc;
+use crate::entities::{telegram_audit_events, telegram_link_requests, telegram_settings, users};
+use chrono::{Duration as ChronoDuration, Utc};
 use log::warn;
 use poem_openapi::{ApiResponse, Object, OpenApi, payload::Json};
 use reqwest::Client;
-use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, Set};
+use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{env, time::Duration};
 use uuid::Uuid;
 
@@ -51,6 +52,48 @@ pub struct TestTelegramRequest {
 #[derive(Object)]
 pub struct TelegramResultDto {
     pub message: String,
+}
+
+#[derive(Object)]
+pub struct TelegramLinkDto {
+    pub url: String,
+    pub expires_at: String,
+}
+
+#[derive(Object)]
+pub struct TelegramLinkStatusDto {
+    pub linked: bool,
+    pub message: String,
+}
+
+#[derive(ApiResponse)]
+pub enum TelegramLinkResponse {
+    #[oai(status = 200)]
+    Ok(Json<TelegramLinkDto>),
+    #[oai(status = 400)]
+    BadRequest(Json<String>),
+    #[oai(status = 401)]
+    Unauthorized(Json<String>),
+    #[oai(status = 404)]
+    NotFound(Json<String>),
+    #[oai(status = 502)]
+    TelegramError(Json<String>),
+    #[oai(status = 500)]
+    Error(Json<String>),
+}
+
+#[derive(ApiResponse)]
+pub enum TelegramLinkStatusResponse {
+    #[oai(status = 200)]
+    Ok(Json<TelegramLinkStatusDto>),
+    #[oai(status = 401)]
+    Unauthorized(Json<String>),
+    #[oai(status = 404)]
+    NotFound(Json<String>),
+    #[oai(status = 502)]
+    TelegramError(Json<String>),
+    #[oai(status = 500)]
+    Error(Json<String>),
 }
 
 #[derive(ApiResponse)]
@@ -107,6 +150,154 @@ pub enum TelegramTestResponse {
 
 #[OpenApi]
 impl TelegramApi {
+    /// Создать одноразовую deep link для привязки Telegram к профилю клиента.
+    #[oai(path = "/telegram/users/:id/link", method = "post")]
+    async fn create_user_link(
+        &self,
+        auth: AdminToken,
+        id: poem_openapi::param::Path<Uuid>,
+    ) -> TelegramLinkResponse {
+        let admin_id = match validate_admin_session(&self.db, &auth.0.token).await {
+            Ok(id) => id,
+            Err(reason) => return TelegramLinkResponse::Unauthorized(Json(reason)),
+        };
+        if users::Entity::find_by_id(id.0)
+            .one(&self.db)
+            .await
+            .ok()
+            .flatten()
+            .is_none()
+        {
+            return TelegramLinkResponse::NotFound(Json("Профиль клиента не найден".into()));
+        }
+        let token = match resolve_bot_token(&self.db, None).await {
+            Ok(token) => token,
+            Err(()) => {
+                return TelegramLinkResponse::BadRequest(Json(
+                    "Сначала настройте Telegram-бота в панели".into(),
+                ));
+            }
+        };
+        let bot_name = match bot_username(&token).await {
+            Ok(name) => name,
+            Err(()) => {
+                return TelegramLinkResponse::TelegramError(Json(
+                    "Не удалось проверить Telegram-бота. Проверьте токен".into(),
+                ));
+            }
+        };
+
+        // Telegram start payload is URL-safe. Persist only its digest and expire it quickly.
+        let payload = Uuid::new_v4().simple().to_string();
+        let token_hash = hash_link_token(&payload);
+        let expires_at = Utc::now().naive_utc() + ChronoDuration::minutes(20);
+        let _ = telegram_link_requests::Entity::delete_many()
+            .filter(telegram_link_requests::Column::ExpiresAt.lt(Utc::now().naive_utc()))
+            .exec(&self.db)
+            .await;
+        let existing = telegram_link_requests::Entity::find_by_id(id.0)
+            .one(&self.db)
+            .await;
+        let active = telegram_link_requests::ActiveModel {
+            user_id: Set(id.0),
+            token_hash: Set(token_hash),
+            expires_at: Set(expires_at),
+        };
+        let saved = match existing {
+            Ok(Some(_)) => active.update(&self.db).await.is_ok(),
+            Ok(None) => active.insert(&self.db).await.is_ok(),
+            Err(_) => false,
+        };
+        if !saved {
+            return TelegramLinkResponse::Error(Json("Не удалось создать ссылку привязки".into()));
+        }
+        record_audit(&self.db, admin_id, "link_create", "ok").await;
+        TelegramLinkResponse::Ok(Json(TelegramLinkDto {
+            url: format!("https://t.me/{bot_name}?start={payload}"),
+            expires_at: expires_at.and_utc().to_rfc3339(),
+        }))
+    }
+
+    /// Найти одноразовый /start и привязать найденный чат только к выбранному профилю.
+    #[oai(path = "/telegram/users/:id/link/complete", method = "post")]
+    async fn complete_user_link(
+        &self,
+        auth: AdminToken,
+        id: poem_openapi::param::Path<Uuid>,
+    ) -> TelegramLinkStatusResponse {
+        let admin_id = match validate_admin_session(&self.db, &auth.0.token).await {
+            Ok(id) => id,
+            Err(reason) => return TelegramLinkStatusResponse::Unauthorized(Json(reason)),
+        };
+        let request = match telegram_link_requests::Entity::find_by_id(id.0)
+            .one(&self.db)
+            .await
+        {
+            Ok(Some(request)) if request.expires_at > Utc::now().naive_utc() => request,
+            Ok(Some(_)) => {
+                let _ = telegram_link_requests::Entity::delete_by_id(id.0)
+                    .exec(&self.db)
+                    .await;
+                return TelegramLinkStatusResponse::NotFound(Json(
+                    "Ссылка истекла. Создайте новую".into(),
+                ));
+            }
+            Ok(None) => {
+                return TelegramLinkStatusResponse::NotFound(Json(
+                    "Сначала создайте ссылку привязки в профиле".into(),
+                ));
+            }
+            Err(_) => {
+                return TelegramLinkStatusResponse::Error(Json(
+                    "Не удалось прочитать запрос привязки".into(),
+                ));
+            }
+        };
+        let token = match resolve_bot_token(&self.db, None).await {
+            Ok(token) => token,
+            Err(()) => {
+                return TelegramLinkStatusResponse::Error(Json(
+                    "Токен Telegram-бота не настроен".into(),
+                ));
+            }
+        };
+        let chat_id = match find_chat_for_start_payload(&token, &request.token_hash).await {
+            Ok(Some(chat_id)) => chat_id,
+            Ok(None) => return TelegramLinkStatusResponse::Ok(Json(TelegramLinkStatusDto {
+                linked: false,
+                message: "Клиент ещё не нажал Start по ссылке. Попросите его открыть ссылку и повторите проверку".into(),
+            })),
+            Err(()) => return TelegramLinkStatusResponse::TelegramError(Json("Не удалось проверить Telegram. Если у бота включён webhook, getUpdates недоступен".into())),
+        };
+        let Some(mut user) = users::Entity::find_by_id(id.0)
+            .one(&self.db)
+            .await
+            .ok()
+            .flatten()
+        else {
+            return TelegramLinkStatusResponse::NotFound(Json("Профиль клиента не найден".into()));
+        };
+        user.telegram_chat_id = Some(chat_id);
+        user.updated_at = Utc::now().naive_utc();
+        if users::ActiveModel::from(user)
+            .update(&self.db)
+            .await
+            .is_err()
+        {
+            return TelegramLinkStatusResponse::Error(Json(
+                "Не удалось сохранить Telegram клиента".into(),
+            ));
+        }
+        let _ = telegram_link_requests::Entity::delete_by_id(id.0)
+            .exec(&self.db)
+            .await;
+        record_audit(&self.db, admin_id, "link_complete", "ok").await;
+        TelegramLinkStatusResponse::Ok(Json(TelegramLinkStatusDto {
+            linked: true,
+            message: "Telegram привязан к профилю клиента".into(),
+        }))
+    }
+
     #[oai(path = "/telegram/settings", method = "get")]
     async fn get_settings(&self, auth: AdminToken) -> TelegramSettingsResponse {
         if let Err(reason) = validate_admin_session(&self.db, &auth.0.token).await {
@@ -409,6 +600,94 @@ pub(crate) fn valid_chat_id(chat_id: &str) -> bool {
 
 fn api_url(token: &str, method: &str) -> String {
     format!("https://api.telegram.org/bot{token}/{method}")
+}
+
+fn hash_link_token(token: &str) -> String {
+    format!("{:x}", Sha256::digest(token.as_bytes()))
+}
+
+async fn bot_username(token: &str) -> Result<String, ()> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(12))
+        .build()
+        .map_err(|_| ())?;
+    let response = client
+        .get(api_url(token, "getMe"))
+        .send()
+        .await
+        .map_err(|_| ())?;
+    if !response.status().is_success() {
+        return Err(());
+    }
+    let payload: Value = response.json().await.map_err(|_| ())?;
+    if payload.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(());
+    }
+    let username = payload
+        .get("result")
+        .and_then(|v| v.get("username"))
+        .and_then(Value::as_str)
+        .ok_or(())?;
+    if username.is_empty()
+        || !username
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
+        return Err(());
+    }
+    Ok(username.to_string())
+}
+
+async fn find_chat_for_start_payload(
+    token: &str,
+    expected_hash: &str,
+) -> Result<Option<String>, ()> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(12))
+        .build()
+        .map_err(|_| ())?;
+    let response = client
+        .get(api_url(token, "getUpdates"))
+        .query(&[("limit", "100"), ("timeout", "0")])
+        .send()
+        .await
+        .map_err(|_| ())?;
+    if !response.status().is_success() {
+        return Err(());
+    }
+    let payload: Value = response.json().await.map_err(|_| ())?;
+    if payload.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(());
+    }
+    let updates = payload.get("result").and_then(Value::as_array).ok_or(())?;
+    for update in updates.iter().rev() {
+        let Some(message) = update.get("message") else {
+            continue;
+        };
+        if message.pointer("/chat/type").and_then(Value::as_str) != Some("private") {
+            continue;
+        }
+        let Some(text) = message.get("text").and_then(Value::as_str) else {
+            continue;
+        };
+        let mut words = text.split_whitespace();
+        let Some(command) = words.next() else {
+            continue;
+        };
+        if command != "/start" && !command.starts_with("/start@") {
+            continue;
+        }
+        let Some(start_payload) = words.next() else {
+            continue;
+        };
+        if hash_link_token(start_payload) != expected_hash {
+            continue;
+        }
+        if let Some(chat_id) = message.pointer("/chat/id").and_then(Value::as_i64) {
+            return Ok(Some(chat_id.to_string()));
+        }
+    }
+    Ok(None)
 }
 
 async fn detect_chat_id(token: &str) -> Result<Option<String>, ()> {

@@ -27,6 +27,7 @@ pub mod m20260909_000026_link_server_groups_and_add_protocols;
 pub mod m20260926_000027_add_crypto_algorithm_to_servers;
 pub mod m20260927_000028_add_telegram_chat_id_to_users;
 pub mod m20260928_000029_telegram_settings;
+pub mod m20260928_000030_telegram_link_requests;
 
 use sea_orm_migration::prelude::*;
 
@@ -65,6 +66,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260926_000027_add_crypto_algorithm_to_servers::Migration),
             Box::new(m20260927_000028_add_telegram_chat_id_to_users::Migration),
             Box::new(m20260928_000029_telegram_settings::Migration),
+            Box::new(m20260928_000030_telegram_link_requests::Migration),
         ]
     }
 }

@@ -24,6 +24,18 @@ export async function DetectTelegramChat(bot_token?: string) {
   })
 }
 
+export async function CreateUserTelegramLink(userId: string) {
+  return api<{ url: string; expires_at: string }>(`/telegram/users/${userId}/link`, {
+    method: 'POST',
+  })
+}
+
+export async function CompleteUserTelegramLink(userId: string) {
+  return api<{ linked: boolean; message: string }>(`/telegram/users/${userId}/link/complete`, {
+    method: 'POST',
+  })
+}
+
 export async function TestTelegramSettings(data: { bot_token?: string; chat_id: string }) {
   return api<{ message: string }>('/telegram/test', { method: 'POST', data })
 }
