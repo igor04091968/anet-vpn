@@ -26,17 +26,36 @@ const { saving, saveRate, createRate } = useRate(user)
 
 const message = useAppMessage()
 const telegramSending = ref(false)
+const DEFAULT_PUBLIC_PANEL_URL = 'https://anet.vpn-rus.top'
+
+const panelBaseUrl = (() => {
+  const configured = import.meta.env.VITE_PANEL_PUBLIC_URL?.trim()
+  if (!configured) return DEFAULT_PUBLIC_PANEL_URL
+  try {
+    const url = new URL(configured)
+    const localHost = url.hostname === 'localhost'
+      || url.hostname.endsWith('.localhost')
+      || url.hostname === '127.0.0.1'
+      || url.hostname === '[::1]'
+      || url.hostname === '::1'
+    return url.protocol === 'https:' && !localHost
+      ? configured.replace(/\/+$/, '')
+      : DEFAULT_PUBLIC_PANEL_URL
+  } catch {
+    return DEFAULT_PUBLIC_PANEL_URL
+  }
+})()
 
 // Прямая ссылка на скачивание client.toml
 const directConfigLink = computed(() => {
   if (!user.value) return ''
-  return `${window.location.origin}/api/v1/config/${user.value.id}`
+  return `${panelBaseUrl}/api/v1/config/${user.value.id}`
 })
 
 // Ссылка на веб-страницу со стильным QR-кодом
 const qrPageLink = computed(() => {
   if (!user.value) return ''
-  return `${window.location.origin}/api/v1/config/qr/${user.value.id}`
+  return `${panelBaseUrl}/api/v1/config/qr/${user.value.id}`
 })
 
 const copyToClipboard = (text: string, successMessage: string) => {
@@ -77,7 +96,11 @@ const copyQrPageLink = () => {
 }
 
 const sendTelegramLinks = async () => {
-  if (!user.value?.id || !user.value.telegram_chat_id) return
+  if (!user.value?.id) return
+  if (!user.value.telegram_chat_id?.trim()) {
+    message.error('Укажите Telegram chat ID клиента и сохраните профиль перед отправкой')
+    return
+  }
   telegramSending.value = true
   try {
     await saveUser()

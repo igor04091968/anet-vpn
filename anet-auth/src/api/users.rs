@@ -21,7 +21,44 @@ use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, IntoActiveModel, Set,
     QueryFilter, QueryOrder, PaginatorTrait, QuerySelect
 };
+use std::net::IpAddr;
 use uuid::Uuid;
+
+const DEFAULT_PUBLIC_PANEL_URL: &str = "https://anet.vpn-rus.top";
+
+fn resolve_public_panel_base_url(value: &str) -> Option<String> {
+    let value = value.trim().trim_end_matches('/').to_string();
+    let url = reqwest::Url::parse(&value).ok()?;
+    let Some(host) = url.host_str() else {
+        return None;
+    };
+    let local_host = host.eq_ignore_ascii_case("localhost")
+        || host.to_ascii_lowercase().ends_with(".localhost")
+        || host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+
+    if url.scheme() == "https"
+        && !local_host
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+    {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+fn public_panel_base_url() -> String {
+    std::env::var("ANET_PANEL_PUBLIC_URL")
+        .ok()
+        .and_then(|value| resolve_public_panel_base_url(&value))
+        .unwrap_or_else(|| DEFAULT_PUBLIC_PANEL_URL.to_string())
+}
 
 pub struct UsersApi {
     pub db: DatabaseConnection,
@@ -29,7 +66,7 @@ pub struct UsersApi {
 }
 
 async fn telegram_delivery_bot_token(db: &DatabaseConnection) -> Result<Option<String>, ()> {
-    let settings = telegram_settings::Entity::find_by_id(1)
+    let settings = telegram_settings::Entity::find_by_id(1_i16)
         .one(db)
         .await
         .map_err(|_| ())?;
@@ -78,14 +115,11 @@ impl UsersApi {
             Ok(Some(token)) => token,
             _ => return TelegramDeliveryResponse::NotConfigured(Json("Токен Telegram-бота не настроен в панели или окружении".into())),
         };
-        let (Ok(panel_url), Ok(download_url)) = (
-            std::env::var("ANET_PANEL_PUBLIC_URL"),
-            std::env::var("ANET_CLIENT_DOWNLOAD_URL"),
-        ) else {
+        let Ok(download_url) = std::env::var("ANET_CLIENT_DOWNLOAD_URL") else {
             return TelegramDeliveryResponse::NotConfigured(Json("Telegram-отправка не настроена в окружении панели".into()));
         };
-        let panel_url = panel_url.trim_end_matches('/');
-        if !panel_url.starts_with("https://") || !download_url.starts_with("https://") {
+        let panel_url = public_panel_base_url();
+        if !download_url.starts_with("https://") {
             return TelegramDeliveryResponse::NotConfigured(Json("Для Telegram требуются HTTPS-ссылки и токен бота".into()));
         }
         let config_url = format!("{panel_url}/api/v1/config/{}", user.id);
@@ -1188,7 +1222,6 @@ impl UsersApi {
     async fn download_config_qr(
         &self,
         id: poem_openapi::param::Path<Uuid>,
-        #[oai(name = "Host")] host: poem_openapi::param::Header<Option<String>>,
     ) -> QrPageResponse {
         let user_opt = match users::Entity::find_by_id(id.0).one(&self.db).await {
             Ok(Some(u)) => u,
@@ -1210,8 +1243,7 @@ impl UsersApi {
             return QrPageResponse::NotFound(Json("Client is inactive or banned".to_string()));
         }
 
-        let host_str = host.0.unwrap_or_else(|| "127.0.0.1:3000".to_string());
-        let config_url = format!("http://{}/api/v1/config/{}", host_str, id.0);
+        let config_url = format!("{}/api/v1/config/{}", public_panel_base_url(), id.0);
 
         let html_page = crate::api::api::get_qr_html_page(
             &config_url,
@@ -1227,5 +1259,25 @@ impl UsersApi {
         );
 
         QrPageResponse::Ok(PlainText(html_page))
+    }
+}
+
+#[cfg(test)]
+mod public_panel_url_tests {
+    use super::resolve_public_panel_base_url;
+
+    #[test]
+    fn accepts_external_https_url_and_removes_trailing_slash() {
+        assert_eq!(
+            resolve_public_panel_base_url(" https://anet.vpn-rus.top/ "),
+            Some("https://anet.vpn-rus.top".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_localhost_and_non_https_urls() {
+        assert!(resolve_public_panel_base_url("http://127.0.0.1:8088").is_none());
+        assert!(resolve_public_panel_base_url("https://localhost:8088").is_none());
+        assert!(resolve_public_panel_base_url("https://[::1]:8088").is_none());
     }
 }
