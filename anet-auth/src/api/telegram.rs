@@ -269,7 +269,7 @@ impl TelegramApi {
             })),
             Err(()) => return TelegramLinkStatusResponse::TelegramError(Json("Не удалось проверить Telegram. Если у бота включён webhook, getUpdates недоступен".into())),
         };
-        let Some(mut user) = users::Entity::find_by_id(id.0)
+        let Some(user) = users::Entity::find_by_id(id.0)
             .one(&self.db)
             .await
             .ok()
@@ -277,16 +277,16 @@ impl TelegramApi {
         else {
             return TelegramLinkStatusResponse::NotFound(Json("Профиль клиента не найден".into()));
         };
-        user.telegram_chat_id = Some(chat_id);
-        user.updated_at = Utc::now().naive_utc();
-        if users::ActiveModel::from(user)
-            .update(&self.db)
-            .await
-            .is_err()
-        {
-            return TelegramLinkStatusResponse::Error(Json(
-                "Не удалось сохранить Telegram клиента".into(),
-            ));
+        let mut active: users::ActiveModel = user.into();
+        active.telegram_chat_id = Set(Some(chat_id));
+        active.updated_at = Set(Utc::now().naive_utc());
+        match active.update(&self.db).await {
+            Ok(saved) if saved.telegram_chat_id.is_some() => {}
+            _ => {
+                return TelegramLinkStatusResponse::Error(Json(
+                    "Не удалось сохранить Telegram клиента".into(),
+                ));
+            }
         }
         let _ = telegram_link_requests::Entity::delete_by_id(id.0)
             .exec(&self.db)
