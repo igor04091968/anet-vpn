@@ -18,6 +18,7 @@ pub struct Model {
     pub public_key: Option<String>,
     pub route_map_id: Option<Uuid>,
     pub group_id: Option<Uuid>,
+    pub telegram_chat_id: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

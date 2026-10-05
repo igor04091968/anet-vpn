@@ -19,6 +19,7 @@ let refreshTimer: number | undefined
 const headers = [
   { title: 'Название', key: 'name', sortable: true },
   { title: 'Адрес / Домен', key: 'address', sortable: true }, // Заменили dsn на address
+  { title: 'Шифрование', key: 'crypto_algorithm', sortable: true },
   { title: 'Configured', key: 'is_active', sortable: true, align: 'center' as const },
   { title: 'Actual state', key: 'runtime.status', sortable: true, align: 'center' as const },
   { title: 'Control plane', key: 'has_control_credential', sortable: true, align: 'center' as const },
@@ -108,6 +109,12 @@ onBeforeUnmount(() => {
       <!-- Выводим адрес вместо dsn -->
       <template #item.address="{ item }">
         <span class="addr-col">{{ item.address }}</span>
+      </template>
+
+      <template #item.crypto_algorithm="{ item }">
+        <v-chip :color="item.crypto_algorithm === 'kuznyechik-mgm' ? 'primary' : 'default'" size="small">
+          {{ item.crypto_algorithm === 'kuznyechik-mgm' ? 'ГОСТ Кузнечик-MGM' : 'ChaCha20-Poly1305' }}
+        </v-chip>
       </template>
 
       <template #item.is_active="{ item }">

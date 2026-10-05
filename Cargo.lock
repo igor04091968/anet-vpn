@@ -360,10 +360,12 @@ dependencies = [
  "poem",
  "poem-openapi",
  "rand 0.8.5",
+ "reqwest",
  "rpassword",
  "sea-orm",
  "sea-orm-migration",
  "serde",
+ "serde_json",
  "sha2 0.10.9",
  "tokio",
  "toml 0.9.8",
@@ -514,6 +516,21 @@ name = "anet-ebpf-common"
 version = "0.1.0"
 dependencies = [
  "aya",
+]
+
+[[package]]
+name = "anet-ios-ffi"
+version = "0.1.0"
+dependencies = [
+ "anet-client-core",
+ "anet-common",
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml 0.9.8",
 ]
 
 [[package]]

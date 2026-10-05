@@ -25,6 +25,11 @@ services:
       - BIND_TO=0.0.0.0:3000
       - AUTH_BACKEND_KEY=test_key
       - JWT_SECRET=secret_na_chushpana
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - ANET_PANEL_PUBLIC_URL=${ANET_PANEL_PUBLIC_URL:-}
+      - ANET_CLIENT_DOWNLOAD_URL=${ANET_CLIENT_DOWNLOAD_URL:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,postgres}
     depends_on:
       postgres:
         condition: service_healthy

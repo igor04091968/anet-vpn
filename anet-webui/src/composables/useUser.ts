@@ -27,6 +27,8 @@ export function useUser() {
       pool_ids: user.value.pool_ids || [],
       route_map_id: user.value.route_map_id || undefined,
       clear_route_map: !user.value.route_map_id,
+      telegram_chat_id: user.value.telegram_chat_id || undefined,
+      clear_telegram_chat_id: !user.value.telegram_chat_id,
     })
   }
 

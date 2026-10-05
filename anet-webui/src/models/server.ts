@@ -4,6 +4,7 @@ export type Server = {
     name: string
     address: string
     public_key: string
+    crypto_algorithm: 'chacha20-poly1305' | 'kuznyechik-mgm'
     ssh_user: string | null
     is_active: boolean
     has_control_credential: boolean
@@ -51,6 +52,7 @@ export type CreateServerRequest = {
     name: string
     address: string
     public_key: string
+    crypto_algorithm: 'chacha20-poly1305' | 'kuznyechik-mgm'
     ssh_user: string | null
     is_active?: boolean
     quic_port?: number | null

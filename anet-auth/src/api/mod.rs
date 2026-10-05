@@ -6,16 +6,14 @@ pub mod pools;
 pub mod route_maps;
 pub mod servers;
 pub mod statistics;
+pub mod telegram;
 pub mod users;
 
 use poem_openapi::OpenApi;
 use sea_orm::DatabaseConnection;
 
 /// Собирает все доменные контроллеры API в единый кортеж для Poem OpenAPI
-pub fn get_api(
-    db: DatabaseConnection,
-    client_template_path: String,
-) -> impl OpenApi {
+pub fn get_api(db: DatabaseConnection, client_template_path: String) -> impl OpenApi {
     (
         auth::AuthApi { db: db.clone() },
         users::UsersApi {
@@ -26,6 +24,7 @@ pub fn get_api(
         pools::PoolsApi { db: db.clone() },
         route_maps::RouteMapsApi { db: db.clone() },
         groups::GroupsApi { db: db.clone() },
-        statistics::StatisticsApi { db },
+        statistics::StatisticsApi { db: db.clone() },
+        telegram::TelegramApi { db },
     )
 }

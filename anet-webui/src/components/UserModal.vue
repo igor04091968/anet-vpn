@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { watch, computed } from 'vue'
+import { watch, computed, ref } from 'vue'
 import { useAppMessage } from '@/composables/useAppMessage'
 
 import UserForm from './UserForm.vue'
@@ -8,6 +8,7 @@ import RateCreateForm from './RateCreateForm.vue'
 
 import { useUser } from '@/composables/useUser'
 import { useRate } from '@/composables/useRate'
+import { SendTelegramLinks } from '@/api/users'
 
 const show = defineModel<boolean>()
 
@@ -24,17 +25,37 @@ const { user, loading, regenerating, loadUser, saveUser, regenerate } = useUser(
 const { saving, saveRate, createRate } = useRate(user)
 
 const message = useAppMessage()
+const telegramSending = ref(false)
+const DEFAULT_PUBLIC_PANEL_URL = 'https://anet.vpn-rus.top'
+
+const panelBaseUrl = (() => {
+  const configured = import.meta.env.VITE_PANEL_PUBLIC_URL?.trim()
+  if (!configured) return DEFAULT_PUBLIC_PANEL_URL
+  try {
+    const url = new URL(configured)
+    const localHost = url.hostname === 'localhost'
+      || url.hostname.endsWith('.localhost')
+      || url.hostname === '127.0.0.1'
+      || url.hostname === '[::1]'
+      || url.hostname === '::1'
+    return url.protocol === 'https:' && !localHost
+      ? configured.replace(/\/+$/, '')
+      : DEFAULT_PUBLIC_PANEL_URL
+  } catch {
+    return DEFAULT_PUBLIC_PANEL_URL
+  }
+})()
 
 // Прямая ссылка на скачивание client.toml
 const directConfigLink = computed(() => {
   if (!user.value) return ''
-  return `${window.location.origin}/api/v1/config/${user.value.id}`
+  return `${panelBaseUrl}/api/v1/config/${user.value.id}`
 })
 
 // Ссылка на веб-страницу со стильным QR-кодом
 const qrPageLink = computed(() => {
   if (!user.value) return ''
-  return `${window.location.origin}/api/v1/config/qr/${user.value.id}`
+  return `${panelBaseUrl}/api/v1/config/qr/${user.value.id}`
 })
 
 const copyToClipboard = (text: string, successMessage: string) => {
@@ -72,6 +93,24 @@ const copyDirectLink = () => {
 const copyQrPageLink = () => {
   if (!qrPageLink.value) return
   copyToClipboard(qrPageLink.value, 'Ссылка на страницу с QR-кодом скопирована!')
+}
+
+const sendTelegramLinks = async () => {
+  if (!user.value?.id) return
+  if (!user.value.telegram_chat_id?.trim()) {
+    message.error('Укажите Telegram chat ID клиента и сохраните профиль перед отправкой')
+    return
+  }
+  telegramSending.value = true
+  try {
+    await saveUser()
+    await SendTelegramLinks(user.value.id)
+    message.success('Конфигурация и ссылка на загрузку отправлены в Telegram')
+  } catch (error: any) {
+    message.error(error?.response?.data || 'Не удалось отправить сообщение в Telegram')
+  } finally {
+    telegramSending.value = false
+  }
 }
 
 watch(
@@ -146,6 +185,28 @@ const handleSaveUser = async () => {
               <v-btn color="primary" variant="tonal" @click="copyDirectLink">Copy</v-btn>
             </template>
           </v-text-field>
+
+          <v-text-field
+              v-model="user.telegram_chat_id"
+              label="Telegram chat ID клиента"
+              hint="Введите числовой ID клиента (его можно узнать у @userinfobot); клиент должен открыть этот бот и нажать Start"
+              persistent-hint
+              inputmode="numeric"
+              variant="outlined"
+              density="compact"
+              class="mt-4"
+          />
+          <v-btn
+              color="primary"
+              variant="tonal"
+              block
+              prepend-icon="mdi-send"
+              :disabled="!user.telegram_chat_id"
+              :loading="telegramSending"
+              @click="sendTelegramLinks"
+          >
+            Отправить конфигурацию и ссылку на обновление в Telegram
+          </v-btn>
 
           <v-text-field
               readonly

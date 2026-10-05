@@ -48,8 +48,21 @@ pub struct MainConfig {
     pub update_url: String,
 }
 
+pub const DEFAULT_UPDATE_URL: &str =
+    "https://api.github.com/repos/igor04091968/anet-vpn/releases/latest";
+
+pub fn resolve_update_url(configured: &str) -> String {
+    if configured.is_empty()
+        || configured == "https://api.github.com/repos/ZeroTworu/anet/releases/latest"
+    {
+        DEFAULT_UPDATE_URL.to_string()
+    } else {
+        configured.to_string()
+    }
+}
+
 fn default_update_url() -> String {
-    "https://api.github.com/repos/ZeroTworu/anet/releases/latest".to_string()
+    DEFAULT_UPDATE_URL.to_string()
 }
 
 impl Default for MainConfig {
@@ -157,6 +170,10 @@ pub struct ServerConfig {
     // Опциональное переопределение публичного ключа сервера
     pub server_pub_key: Option<String>,
 
+    /// Overrides [crypto].algorithm for this endpoint; older profiles use the global value.
+    #[serde(default)]
+    pub crypto_algorithm: Option<CryptoAlgorithm>,
+
     // Опциональное переопределение пользователя SSH
     pub ssh_user: Option<String>,
 
@@ -190,6 +207,7 @@ impl Default for ServerConfig {
             dsn: String::new(),
             timeout_secs: default_timeout_secs(),
             server_pub_key: None,
+            crypto_algorithm: None,
             ssh_user: None,
             group_name: None,
             group_id: None,
@@ -470,6 +488,7 @@ mod tests {
             dsn: "quic://vpn.example.com:4519".to_string(),
             timeout_secs: 10,
             server_pub_key: None,
+            crypto_algorithm: None,
             ssh_user: None,
             group_name: None,
             group_id: None,
@@ -497,6 +516,7 @@ mod tests {
             dsn: "wss://gm1.anet-project.org/socket".to_string(),
             timeout_secs: 10,
             server_pub_key: None,
+            crypto_algorithm: None,
             ssh_user: None,
 
             group_name: None,

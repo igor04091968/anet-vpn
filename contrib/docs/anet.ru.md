@@ -30,10 +30,10 @@
 
 Private Signing Key (add to server.toml):
 [crypto]
-server_signing_key = "BGQGf36RKbzEQ6Ef68O0ScVA+tLeVoYcTAE61Mig1js="
+server_signing_key = "<GENERATE_WITH_anet-keygen>"
 
 Public Key (for client verification, optional):
-iqo4UuQlbWN35Pyp5vQedTEt1FeKA+6wxYTVS/XzHww=
+<GENERATED_SERVER_PUBLIC_KEY>
 ```
 `Public Key` — сохраняем куда-нибудь на криптофлешку. На самом деле он ни фига не "optional"! Его мы будем раздавать клиентам, чтобы они могли убедиться, что говорят именно с вашим сервером.
 
@@ -144,13 +144,13 @@ sudo sysctl --system
 
 Private Key (add to client.toml):
 [keys]
-private_key = "QehLlLB5gNzceXAjjsl/1RQKeY97RVN8GBgHlfsHbn4="
+private_key = "<GENERATE_WITH_anet-keygen>"
 
 Fingerprint (add to server.toml allowed_clients):
-f+f9KfEh/kuAZUzLMT4z7A==
+<GENERATED_CLIENT_FINGERPRINT>
 ```
 
-* Полученный Fingerprint (`f+f9KfEh/kuAZUzLMT4z7A==`) вписываем в серверный конфиг: `allowed_clients = ["f+f9KfEh/kuAZUzLMT4z7A=="]`.
+* Полученный fingerprint вписываем в серверный конфиг: `allowed_clients = ["<GENERATED_CLIENT_FINGERPRINT>"]`.
 * **ВАЖНЫЙ момент!** Сервер после этого надо перезапустить.
 * Приватный ключ отдаём кошке. Также не забудьте сказать кошке IP/Порт сервера и `Server Public Key`, полученный на этапе генерации ключей сервера.
 
@@ -270,7 +270,7 @@ docker compose up -d
 ```toml
 [authentication]
 auth_servers = ["http://127.0.0.1:3000/api/v1"]
-auth_server_token = "super_secret_vpn_key_2025"
+  auth_server_token = "<SET_A_LONG_RANDOM_SECRET>"
 ```
 5. Перезапускаем `anet-server` один раз. Теперь можно плодить клиентов через WebUI без перезагрузок VPN-сервера!
 

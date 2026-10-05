@@ -128,6 +128,7 @@ async fn handle_add_user(
         public_key: Set(Some(encrypted_public_key)),
         route_map_id: Set(None),
         group_id: Set(None),
+        telegram_chat_id: Set(None),
     };
 
     // 3. Сохраняем

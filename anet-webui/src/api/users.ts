@@ -58,3 +58,7 @@ export async function CreateUser(data: CreateUserRequest): Promise<User> {
     data,
   })
 }
+
+export async function SendTelegramLinks(id: string): Promise<string> {
+  return api<string>(`/user/${id}/telegram/send`, { method: 'POST' })
+}

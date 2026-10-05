@@ -1,11 +1,12 @@
-# Upstream
+# Происхождение проекта
 
-This repository is based on the upstream ANet project:
+ANet VPN начинался как форк upstream-проекта ANet:
 
-- Repository: <https://github.com/ZeroTworu/anet>
-- Imported source revision: `3f3a837` (2026-09-17)
-- License and upstream notices remain in the source tree.
+- Исходный репозиторий: <https://github.com/ZeroTworu/anet>
+- Импортированная ревизия: `3f3a837` от 17 сентября 2026 года.
+- Текущий публичный репозиторий форка: <https://github.com/igor04091968/anet-vpn>.
 
-The local repository intentionally has no Git remote configured. Review the
-diff and decide on a private remote before publishing; deployment topology and
-operator details in `docs/` and `ops/` are not intended for a public repository.
+История, лицензия и уведомления upstream сохранены. Последующие изменения
+развиваются в этом форке. В `docs/` и `ops/` есть сведения об эксплуатации
+конкретного окружения: перед добавлением новых адресов, конфигов или журналов
+проверьте, что в них нет секретов и данных, которые не следует публиковать.

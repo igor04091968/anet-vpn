@@ -48,3 +48,6 @@ private/
 /tools/dpi-helper/dist/
 *.so
 *.h.generated
+anet-ios/ANetVPN/DerivedData/
+**/*.xcuserstate
+!anet-ios/rust/anet-ios-ffi/build-rust.sh

@@ -1,0 +1,158 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 /* ANetVPNApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* ANetVPNApp.swift */; };
+		A10000000000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* ContentView.swift */; };
+		A10000000000000000000003 /* VPNManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* VPNManager.swift */; };
+		A10000000000000000000004 /* PacketTunnelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* PacketTunnelProvider.swift */; };
+		A10000000000000000000005 /* libanet_ios_ffi.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* libanet_ios_ffi.a */; };
+		A10000000000000000000006 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000012 /* NetworkExtension.framework */; };
+		A10000000000000000000007 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* Security.framework */; };
+		A10000000000000000000008 /* CoreFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000014 /* CoreFoundation.framework */; };
+		A10000000000000000000009 /* PacketTunnel.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A20000000000000000000010 /* PacketTunnel.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A30000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A60000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A50000000000000000000002;
+			remoteInfo = PacketTunnel;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A40000000000000000000001 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (A10000000000000000000009 /* PacketTunnel.appex in Embed App Extensions */, );
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		A20000000000000000000001 /* ANetVPNApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ANetVPNApp.swift; sourceTree = "<group>"; };
+		A20000000000000000000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A20000000000000000000003 /* VPNManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VPNManager.swift; sourceTree = "<group>"; };
+		A20000000000000000000004 /* App Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A20000000000000000000005 /* ANetVPN.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ANetVPN.entitlements; sourceTree = "<group>"; };
+		A20000000000000000000008 /* PacketTunnelProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketTunnelProvider.swift; sourceTree = "<group>"; };
+		A20000000000000000000009 /* PacketTunnel Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A2000000000000000000000A /* PacketTunnel.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PacketTunnel.entitlements; sourceTree = "<group>"; };
+		A20000000000000000000010 /* PacketTunnel.appex */ = {isa = PBXFileReference; explicitFileType = wrapper.app-extension; includeInIndex = 0; path = PacketTunnel.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		A20000000000000000000011 /* libanet_ios_ffi.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libanet_ios_ffi.a; sourceTree = BUILT_PRODUCTS_DIR; };
+		A20000000000000000000012 /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
+		A20000000000000000000013 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		A20000000000000000000014 /* CoreFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreFoundation.framework; path = System/Library/Frameworks/CoreFoundation.framework; sourceTree = SDKROOT; };
+		A20000000000000000000015 /* ANetVPN.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ANetVPN.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A20000000000000000000016 /* anet_ios_ffi.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "../rust/anet-ios-ffi/include/anet_ios_ffi.h"; sourceTree = SOURCE_ROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A40000000000000000000002 /* App Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A40000000000000000000003 /* PacketTunnel Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000005 /* libanet_ios_ffi.a in Frameworks */, A10000000000000000000006 /* NetworkExtension.framework in Frameworks */, A10000000000000000000007 /* Security.framework in Frameworks */, A10000000000000000000008 /* CoreFoundation.framework in Frameworks */, ); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A70000000000000000000001 = {isa = PBXGroup; children = (A70000000000000000000002 /* App */, A70000000000000000000003 /* PacketTunnel */, A70000000000000000000004 /* Frameworks */, A70000000000000000000005 /* Products */, ); sourceTree = "<group>"; };
+		A70000000000000000000002 /* App */ = {isa = PBXGroup; path = App; sourceTree = "<group>"; children = (A20000000000000000000001 /* ANetVPNApp.swift */, A20000000000000000000002 /* ContentView.swift */, A20000000000000000000003 /* VPNManager.swift */, A20000000000000000000004 /* App Info.plist */, A20000000000000000000005 /* ANetVPN.entitlements */, ); };
+		A70000000000000000000003 /* PacketTunnel */ = {isa = PBXGroup; path = PacketTunnel; sourceTree = "<group>"; children = (A20000000000000000000008 /* PacketTunnelProvider.swift */, A20000000000000000000009 /* PacketTunnel Info.plist */, A2000000000000000000000A /* PacketTunnel.entitlements */, A20000000000000000000016 /* anet_ios_ffi.h */, ); };
+		A70000000000000000000004 /* Frameworks */ = {isa = PBXGroup; children = (A20000000000000000000012 /* NetworkExtension.framework */, A20000000000000000000013 /* Security.framework */, A20000000000000000000014 /* CoreFoundation.framework */, ); name = Frameworks; sourceTree = "<group>"; };
+		A70000000000000000000005 /* Products */ = {isa = PBXGroup; children = (A20000000000000000000015 /* ANetVPN.app */, A20000000000000000000010 /* PacketTunnel.appex */, A20000000000000000000011 /* libanet_ios_ffi.a */, ); name = Products; sourceTree = "<group>"; };
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A50000000000000000000001 /* ANetVPN */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A80000000000000000000002 /* Build configuration list for PBXNativeTarget "ANetVPN" */;
+			buildPhases = (A40000000000000000000004 /* App Sources */, A40000000000000000000002 /* App Frameworks */, A40000000000000000000005 /* App Resources */, A40000000000000000000006 /* Embed App Extensions */, );
+			buildRules = ();
+			dependencies = (A90000000000000000000001 /* PacketTunnel */, );
+			name = ANetVPN;
+			productName = ANetVPN;
+			productReference = A20000000000000000000015 /* ANetVPN.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A50000000000000000000002 /* PacketTunnel */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A80000000000000000000003 /* Build configuration list for PBXNativeTarget "PacketTunnel" */;
+			buildPhases = (A40000000000000000000007 /* Rust static library */, A40000000000000000000008 /* PacketTunnel Sources */, A40000000000000000000003 /* PacketTunnel Frameworks */, A40000000000000000000009 /* PacketTunnel Resources */, );
+			buildRules = ();
+			dependencies = ();
+			name = PacketTunnel;
+			productName = PacketTunnel;
+			productReference = A20000000000000000000010 /* PacketTunnel.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A60000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {BuildIndependentTargetsIn parallel = 1; LastUpgradeCheck = 1600; TargetAttributes = {A50000000000000000000001 = {CreatedOnToolsVersion = 16.0; }; A50000000000000000000002 = {CreatedOnToolsVersion = 16.0; }; }; };
+			buildConfigurationList = A80000000000000000000001 /* Build configuration list for PBXProject */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = ru;
+			hasScannedForEncodings = 0;
+			knownRegions = (ru, en, Base, );
+			mainGroup = A70000000000000000000001;
+			productRefGroup = A70000000000000000000005 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (A50000000000000000000001 /* ANetVPN */, A50000000000000000000002 /* PacketTunnel */, );
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A40000000000000000000005 /* App Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A40000000000000000000009 /* PacketTunnel Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A40000000000000000000004 /* App Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000001 /* ANetVPNApp.swift in Sources */, A10000000000000000000002 /* ContentView.swift in Sources */, A10000000000000000000003 /* VPNManager.swift in Sources */, ); runOnlyForDeploymentPostprocessing = 0; };
+		A40000000000000000000008 /* PacketTunnel Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000004 /* PacketTunnelProvider.swift in Sources */, ); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A40000000000000000000007 /* Rust static library */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = ();
+			inputPaths = ("$(SRCROOT)/../rust/anet-ios-ffi/build-rust.sh", "$(SRCROOT)/../rust/anet-ios-ffi/src/lib.rs", "$(SRCROOT)/../rust/anet-ios-ffi/Cargo.toml", );
+			name = "Build ANet Rust core";
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/bin/sh \"${SRCROOT}/../rust/anet-ios-ffi/build-rust.sh\"";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A90000000000000000000001 /* PacketTunnel */ = {isa = PBXTargetDependency; target = A50000000000000000000002 /* PacketTunnel */; targetProxy = A30000000000000000000001 /* PBXContainerItemProxy */; };
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		AB0000000000000000000001 /* Project Debug */ = {isa = XCBuildConfiguration; buildSettings = {CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 15.0; SDKROOT = iphoneos; SWIFT_VERSION = 5.0; }; name = Debug; };
+		AB0000000000000000000002 /* Project Release */ = {isa = XCBuildConfiguration; buildSettings = {CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 15.0; SDKROOT = iphoneos; SWIFT_VERSION = 5.0; }; name = Release; };
+		AB0000000000000000000003 /* App Debug */ = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_ENTITLEMENTS = App/ANetVPN.entitlements; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = App/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 15.0; MARKETING_VERSION = 0.1.0; PRODUCT_BUNDLE_IDENTIFIER = org.anet.vpn.ios; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1; }; name = Debug; };
+		AB0000000000000000000004 /* App Release */ = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_ENTITLEMENTS = App/ANetVPN.entitlements; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = App/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 15.0; MARKETING_VERSION = 0.1.0; PRODUCT_BUNDLE_IDENTIFIER = org.anet.vpn.ios; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1; }; name = Release; };
+		AB0000000000000000000005 /* Extension Debug */ = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_ENTITLEMENTS = PacketTunnel/PacketTunnel.entitlements; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = PacketTunnel/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 15.0; LIBRARY_SEARCH_PATHS = "$(inherited) $(BUILT_PRODUCTS_DIR)"; MARKETING_VERSION = 0.1.0; OTHER_LDFLAGS = "$(inherited) -lanet_ios_ffi -framework NetworkExtension -framework Security -framework CoreFoundation"; PRODUCT_BUNDLE_IDENTIFIER = org.anet.vpn.ios.PacketTunnel; PRODUCT_NAME = PacketTunnel; SDKROOT = iphoneos; SKIP_INSTALL = YES; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_OBJC_BRIDGING_HEADER = "$(SRCROOT)/../rust/anet-ios-ffi/include/anet_ios_ffi.h"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1; }; name = Debug; };
+		AB0000000000000000000006 /* Extension Release */ = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_ENTITLEMENTS = PacketTunnel/PacketTunnel.entitlements; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = PacketTunnel/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 15.0; LIBRARY_SEARCH_PATHS = "$(inherited) $(BUILT_PRODUCTS_DIR)"; MARKETING_VERSION = 0.1.0; OTHER_LDFLAGS = "$(inherited) -lanet_ios_ffi -framework NetworkExtension -framework Security -framework CoreFoundation"; PRODUCT_BUNDLE_IDENTIFIER = org.anet.vpn.ios.PacketTunnel; PRODUCT_NAME = PacketTunnel; SDKROOT = iphoneos; SKIP_INSTALL = YES; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_OBJC_BRIDGING_HEADER = "$(SRCROOT)/../rust/anet-ios-ffi/include/anet_ios_ffi.h"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1; }; name = Release; };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A80000000000000000000001 /* Build configuration list for PBXProject */ = {isa = XCConfigurationList; buildConfigurations = (AB0000000000000000000001 /* Project Debug */, AB0000000000000000000002 /* Project Release */, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A80000000000000000000002 /* Build configuration list for PBXNativeTarget "ANetVPN" */ = {isa = XCConfigurationList; buildConfigurations = (AB0000000000000000000003 /* App Debug */, AB0000000000000000000004 /* App Release */, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A80000000000000000000003 /* Build configuration list for PBXNativeTarget "PacketTunnel" */ = {isa = XCConfigurationList; buildConfigurations = (AB0000000000000000000005 /* Extension Debug */, AB0000000000000000000006 /* Extension Release */, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+/* End XCConfigurationList section */
+	};
+	rootObject = A60000000000000000000001 /* Project object */;
+}

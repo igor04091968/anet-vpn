@@ -1,118 +1,86 @@
-# ANet: Сеть Друзей
+# ANet VPN
 
-![Language](https://img.shields.io/badge/rust-1.98%2B-orange)
-![Protocol](https://img.shields.io/badge/protocol-ASTP_v0.6-blue)
+ANet is a client and server for connecting private networks over the ANet Secure
+Transport Protocol (ASTP). This repository contains the shared Rust core, Linux
+server, desktop and Android client components, and the administrator panel.
 
-**ANet** — это инструмент для организации приватного, защищенного информационного пространства между близкими людьми. Мы строим цифровые мосты там, где обычные пути недоступны.
+## Происхождение
 
-Это не сервис. Это технология для связи тех, кто доверяет друг другу.
+Этот проект начался как форк [ZeroTworu/anet](https://github.com/ZeroTworu/anet).
+В исходную копию вошёл upstream-коммит `3f3a837` от 17 сентября 2026 года.
+Дальше проект развивается в публичном репозитории
+[igor04091968/anet-vpn](https://github.com/igor04091968/anet-vpn). История,
+лицензия и уведомления исходного проекта сохранены; подробности — в
+[`UPSTREAM.md`](UPSTREAM.md).
 
-## Особенности
+## Возможности
 
-В основе проекта лежит собственный транспортный протокол **ASTP (ANet Secure Transport Protocol)**, разработанный с фокусом на:
+- Клиент и сервер поддерживают ChaCha20-Poly1305 и ГОСТ-алгоритм
+  Кузнечик-MGM. Алгоритм задаётся в конфигурации; в клиентском профиле его
+  можно выбрать отдельно для каждого сервера. Стороны должны использовать один
+  и тот же алгоритм. Реализация ГОСТ здесь не является сертифицированным
+  средством криптографической защиты.
+- ASTP работает поверх QUIC, SSH, VNC, WebSocket и AHTTP. Доступные транспорты
+  зависят от настроек конкретного сервера.
+- Серверы могут проверять ключ клиента через `anet-auth` и выдавать ему
+  конфигурацию с адресом и параметрами маршрутизации.
+- Веб-панель управляет клиентами, группами, пулами серверов, маршрутами и
+  настройками Telegram. Из профиля клиента можно отправить в Telegram ссылку на
+  его конфигурацию и ссылку на приложение. Для этого клиент должен сообщить
+  свой числовой Telegram chat ID и начать переписку с ботом.
+- Есть Linux GUI и CLI, Android-библиотека и заготовка отдельного iOS-клиента.
+  iOS-компоненты пока не представляют готовое приложение для установки.
 
-*   **Приватность:** Полное сквозное шифрование (ChaCha20Poly1305 / X25519).
-*   **Устойчивость:** Стабильная работа в сетях с высокими потерями пакетов и нестабильным соединением.
-*   **Мимикрия:** Транспортный уровень неотличим от случайного шума (High-entropy UDP stream).
-*   **Кроссплатформенность:** Клиенты для Linux, Windows и Android.
+Ссылка на конфигурацию даёт возможность скачать профиль без входа в панель.
+Отправляйте её только нужному получателю и не добавляйте персональные ссылки,
+ключи или рабочие конфиги в Git.
 
-## Структура проекта
+## Основные части
 
-Проект написан на Rust и разделен на модули:
-
-*   `anet-auth` — Узел координации.
-*   `anet-server` — Сам сервер (может работать без `anet-auth`).
-*   `anet-client-core` — Непосредственно клиент.
-*   `anet-client-cli` — Консольный клиент для Linux/Headless систем.
-*   `anet-client-gui` — Графический клиент (Windows/Linux) с минималистичным интерфейсом.
-*   `anet-mobile` — Библиотека и JNI-биндинги для Android.
-*   `anet-common` — Реализация протокола ASTP и криптографии.
-*   `anet-keygen` — Утилита для генерации ключей доступа.
-*   `anet-webui` — Админ панель.
-
-Как мог накидал: [Документацию](./contrib/docs/anet.ru.md)
-
-Развёртывание новой GOST-площадки и отдельных VPN-узлов: [Ansible runbook](./ops/orchestration/README.ru.md).
-
-А это уже полностью нейронка: [AUTH HTTP API](./contrib/docs/http.api.ru.md)
+| Каталог | Назначение |
+| --- | --- |
+| `anet-common` | Общие протоколы, типы и криптографические примитивы |
+| `anet-client-core` | Сетевое подключение и транспортный слой клиента |
+| `anet-client-cli` | Консольный Linux-клиент |
+| `anet-client-gui` | Графический клиент для Linux и Windows |
+| `anet-mobile` | Rust-библиотека и JNI для Android-клиента |
+| `anet-server` | Сервер ANet для Linux |
+| `anet-auth` | API авторизации, управления клиентами и Telegram-доставки |
+| `anet-webui` | Веб-интерфейс панели администратора |
+| `anet-keygen` | Утилита для генерации ключей |
+| `anet-ios` | Начальная заготовка iOS-приложения и Rust FFI |
+| `ops/webui` | Шаблоны и инструкции локального WebUI-развёртывания |
 
 ## Сборка
 
-Требуется установленный Rust (cargo).
+Нужен стабильный Rust toolchain. Для сборки Linux GUI на Debian/Ubuntu
+установите системные зависимости и соберите пакет:
 
-```bash
-# Сборка всех компонентов
-make all
-
-# Сборка статичных бинарников с musl
-make musl
-
-# Сборка библиотеки для Android
-make mob
-
-# Сборка под macOS
-# Build macOS CLI client
-make macos
-
-# Build macOS GUI client
-make macos-gui
-
-# Build universal macOS binaries (Intel + Apple Silicon)
-make macos-universal
-
-# Генерация сертификата для QUIC
-make cert
+```sh
+sudo apt install libgtk-3-dev libappindicator3-dev protobuf-compiler libxdo-dev
+cargo build --release -p anet-client-gui
 ```
-[Android src](https://github.com/ZeroTworu/anet-android)
 
-[TG Channel](https://t.me/anet_org)
+Другие полезные команды из корня проекта:
 
-[Donate](https://dalink.to/anet_project)
+```sh
+cargo build --release -p anet-client-cli
+make mob                 # Android JNI-библиотеки; нужен Android NDK и cargo-ndk
+cargo build --release -p anet-client-gui  # GUI на текущей платформе, включая macOS
+```
 
-Тут некто [Lisenblsh](https://github.com/Lisenblsh) завернул всё это в docker - [anet-docker](https://github.com/Lisenblsh/anet-docker)
+Полная карта развернутых сервисов находится в
+[`docs/operations-current.md`](docs/operations-current.md). Инструкции по
+Telegram-доставке и настройке WebUI — в [`ops/webui/README.md`](ops/webui/README.md).
 
-Лично я не проверял, но с первого взгляда выглядит нормально.
+## Релизы
 
-**WARNINING!**
+Сборки публикуются на странице
+[Releases](https://github.com/igor04091968/anet-vpn/releases). Перед установкой
+проверьте описание релиза и контрольную сумму приложенного файла.
 
-Это не мой друг-знакомый, так что "на свой страх и риск", обсуждение [тут](https://github.com/ZeroTworu/anet/issues/36).
+## Скриншоты
 
-## Скриншоты интерфейса
+В `.assets/` лежат снимки интерфейсов Windows, Android и панели администратора.
 
-
-### Desktop Windows Application
-<p align="center">
-<img src=".assets/desktop-1.png" height="380" alt="Интерфейс отключен" />
-<img src=".assets/desktop-2.png" height="380" alt="Процесс подключения" />
-<img src=".assets/desktop-3.png" height="380" alt="Успешное соединение" />
-<img src=".assets/desktop-4.png" height="380" alt="Управление приложениями" />
-<img src=".assets/desktop-5.png" height="380" alt="Обновления" />
-<img src=".assets/desktop-6.png" height="380" alt="Управление настройками" />
-<img src=".assets/desktop-7.png" height="380" alt="Выбор ноды" />
-<img src=".assets/desktop-7.png" height="380" alt="Исключение адресов из туннелирования" />
-</p>
-
-
-### Mobile Android Application
-<p align="center">
-<img src=".assets/mobile_1.png" height="380" alt="Базовое окно" />
-<img src=".assets/mobile_4.png" height="380" alt="Процесс соединения" />
-<img src=".assets/mobile_5.png" height="380" alt="Успешное соединение" />
-<img src=".assets/mobile_3.png" height="380" alt="Окно выбора приложений для туннелирования" />
-<img src=".assets/mobile_2.png" height="380" alt="Окно обновления" />
-<img src=".assets/mobile_6.png" height="380" alt="Выбор ноды" />
-<img src=".assets/mobile_7.png" height="380" alt="Выбор конфига" />
-<img src=".assets/mobile_8.png" height="380" alt="Редактирование конфига" />
-<img src=".assets/mobile_9.png" height="380" alt="Удаление конфига" />
-
-</p>
-
-
-### Web Admin
-<p align="center">
-<img src=".assets/web_admin_1.png" height="380" />
-<img src=".assets/web_admin_2.png" height="380" a />
-<img src=".assets/web_admin_3.png" height="380" alt="Успешное соединение" />
-<img src=".assets/web_admin_4.png" height="380"  />
-<img src=".assets/web_admin_5.png" height="380" />
-</p>
+Диагностика и ручной подбор соединения Android: [инструкция](docs/dpi-diagnostics-usage.ru.md).

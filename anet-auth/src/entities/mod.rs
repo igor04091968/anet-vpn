@@ -16,6 +16,8 @@ pub mod route_maps;
 pub mod route_rules;
 pub mod user_servers;
 pub mod protocol_type;
+pub mod telegram_audit_events;
+pub mod telegram_settings;
 pub mod groups;
 pub mod group_node_pools;
 

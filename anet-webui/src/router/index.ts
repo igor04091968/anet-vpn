@@ -8,6 +8,7 @@ const Statistics = () => import('@/ui/Statistics.vue')
 const Pools = () => import('@/ui/Pools.vue')
 const RouteMaps = () => import('@/ui/RouteMaps.vue')
 const Overview = () => import('@/ui/Overview.vue')
+const Settings = () => import('@/ui/Settings.vue')
 
 const Groups = () => import('@/ui/Groups.vue')
 
@@ -25,6 +26,7 @@ const router = createRouter({
     { path: '/users', component: Users, meta: { title: 'Users' } },
     { path: '/servers', component: Servers, meta: { title: 'Nodes' } },
     { path: '/statistics', component: Statistics, meta: { title: 'Traffic' } },
+    { path: '/settings', component: Settings, meta: { title: 'Settings' } },
     { path: '/pools', component: Pools, meta: { title: 'Node Pools' } },
     { path: '/route-maps', component: RouteMaps, meta: { title: 'Route Maps' } },
     { path: '/groups', component: Groups, meta: { title: 'User Groups' } },

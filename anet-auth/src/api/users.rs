@@ -6,12 +6,12 @@ use crate::api::dto::{
     AddRateApiResult, AddRateRequest, AddUserApiResult, AddUserRequest, AddUserResponse,
     AdminToken, DownloadConfigResponse, GetUserApiResult, GetUsersResponse, PaginatedUsers,
     QrPageResponse, RateDto, RegenerateUserApiResult, RegenerateUserResponse, UpdateRateApiResult,
-    UpdateRateRequest, UpdateUserApiResult, UpdateUserRequest, VpnUserDto,
+    UpdateRateRequest, UpdateUserApiResult, UpdateUserRequest, VpnUserDto, TelegramDeliveryResponse,
 };
 use crate::crypto::DbEncryptor;
 use crate::entities::{
-    group_node_pools, groups, node_pool_members, node_pools, servers, user_node_pools,
-    user_servers, users, ProtocolType,
+    group_node_pools, node_pool_members, node_pools, servers, user_node_pools,
+    telegram_settings, user_servers, users, ProtocolType,
 };
 use crate::route_compiler::toml_string_array;
 use chrono::{NaiveDateTime, Utc};
@@ -21,15 +21,138 @@ use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, IntoActiveModel, Set,
     QueryFilter, QueryOrder, PaginatorTrait, QuerySelect
 };
+use std::net::IpAddr;
 use uuid::Uuid;
+
+const DEFAULT_PUBLIC_PANEL_URL: &str = "https://anet.vpn-rus.top";
+
+fn resolve_public_panel_base_url(value: &str) -> Option<String> {
+    let value = value.trim().trim_end_matches('/').to_string();
+    let url = reqwest::Url::parse(&value).ok()?;
+    let Some(host) = url.host_str() else {
+        return None;
+    };
+    let local_host = host.eq_ignore_ascii_case("localhost")
+        || host.to_ascii_lowercase().ends_with(".localhost")
+        || host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+
+    if url.scheme() == "https"
+        && !local_host
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+    {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+fn public_panel_base_url() -> String {
+    std::env::var("ANET_PANEL_PUBLIC_URL")
+        .ok()
+        .and_then(|value| resolve_public_panel_base_url(&value))
+        .unwrap_or_else(|| DEFAULT_PUBLIC_PANEL_URL.to_string())
+}
 
 pub struct UsersApi {
     pub db: DatabaseConnection,
     pub client_template_path: String,
 }
 
+async fn telegram_delivery_bot_token(db: &DatabaseConnection) -> Result<Option<String>, ()> {
+    let settings = telegram_settings::Entity::find_by_id(1_i16)
+        .one(db)
+        .await
+        .map_err(|_| ())?;
+    if let Some(ciphertext) = settings
+        .and_then(|settings| settings.bot_token_ciphertext)
+        .filter(|value| !value.is_empty())
+    {
+        return DbEncryptor::new()
+            .decrypt(&ciphertext)
+            .map(Some)
+            .map_err(|_| ());
+    }
+
+    Ok(std::env::var("TELEGRAM_BOT_TOKEN")
+        .ok()
+        .map(|token| token.trim().to_owned())
+        .filter(|token| !token.is_empty()))
+}
+
 #[OpenApi]
 impl UsersApi {
+
+    /// Отправить клиенту в Telegram конфигурацию и ссылку на загрузку клиента.
+    #[oai(path = "/user/:id/telegram/send", method = "post")]
+    async fn send_telegram_links(
+        &self,
+        auth: AdminToken,
+        id: poem_openapi::param::Path<Uuid>,
+    ) -> TelegramDeliveryResponse {
+        if let Err(reason) = validate_admin_session(&self.db, &auth.0.token).await {
+            return TelegramDeliveryResponse::Unauthorized(Json(reason));
+        }
+
+        let user = match users::Entity::find_by_id(id.0).one(&self.db).await {
+            Ok(Some(user)) => user,
+            Ok(None) => return TelegramDeliveryResponse::NotFound(Json("Клиент не найден".into())),
+            Err(_) => return TelegramDeliveryResponse::DeliveryFailed(Json("Не удалось прочитать профиль клиента".into())),
+        };
+        if !user.is_active {
+            return TelegramDeliveryResponse::BadRequest(Json("Нельзя отправить данные неактивному клиенту".into()));
+        }
+        let Some(chat_id) = user.telegram_chat_id else {
+            return TelegramDeliveryResponse::BadRequest(Json("Сначала укажите Telegram chat ID и сохраните профиль".into()));
+        };
+        let bot_token = match telegram_delivery_bot_token(&self.db).await {
+            Ok(Some(token)) => token,
+            _ => return TelegramDeliveryResponse::NotConfigured(Json("Токен Telegram-бота не настроен в панели или окружении".into())),
+        };
+        let Ok(download_url) = std::env::var("ANET_CLIENT_DOWNLOAD_URL") else {
+            return TelegramDeliveryResponse::NotConfigured(Json("Telegram-отправка не настроена в окружении панели".into()));
+        };
+        let panel_url = public_panel_base_url();
+        if !download_url.starts_with("https://") {
+            return TelegramDeliveryResponse::NotConfigured(Json("Для Telegram требуются HTTPS-ссылки и токен бота".into()));
+        }
+        let config_url = format!("{panel_url}/api/v1/config/{}", user.id);
+        let display_name = user.uid.as_deref().filter(|name| !name.trim().is_empty()).unwrap_or("клиент");
+        let text = format!(
+            "Здравствуйте, {display_name}!\n\nКонфигурация ANet: {config_url}\nСкачать или обновить приложение: {download_url}"
+        );
+        let endpoint = format!("https://api.telegram.org/bot{}/sendMessage", bot_token.trim());
+        let result = match reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(12))
+            .build()
+        {
+            Ok(client) => client.post(endpoint)
+                .json(&serde_json::json!({
+                    "chat_id": chat_id,
+                    "text": text,
+                    "disable_web_page_preview": true
+                }))
+                .send()
+                .await,
+            Err(_) => return TelegramDeliveryResponse::DeliveryFailed(Json("Не удалось создать Telegram HTTP-клиент".into())),
+        };
+        match result {
+            Ok(response) if response.status().is_success() => {
+                match response.json::<serde_json::Value>().await {
+                    Ok(body) if body.get("ok").and_then(|v| v.as_bool()) == Some(true) =>
+                        TelegramDeliveryResponse::Ok(Json("Сообщение отправлено в Telegram".into())),
+                    _ => TelegramDeliveryResponse::DeliveryFailed(Json("Telegram отклонил отправку. Проверьте chat ID и что клиент запускал бота командой /start".into())),
+                }
+            }
+            _ => TelegramDeliveryResponse::DeliveryFailed(Json("Telegram API недоступен или отклонил отправку".into())),
+        }
+    }
 
     /// Получить список всех пользователей (с поиском, фильтром групп и сортировкой)
     #[oai(path = "/users", method = "get")]
@@ -123,6 +246,7 @@ impl UsersApi {
                 pool_ids: Vec::new(),
                 route_map_id: m.route_map_id,
                 group_id: m.group_id,
+                telegram_chat_id: m.telegram_chat_id,
             });
         }
 
@@ -180,6 +304,7 @@ impl UsersApi {
             pool_ids: p_ids,
             route_map_id,
             group_id: result.0.group_id,
+            telegram_chat_id: result.0.telegram_chat_id,
         }))
     }
 
@@ -215,30 +340,12 @@ impl UsersApi {
             public_key: Set(Some(encrypted_public_key)),
             route_map_id: Set(req.0.route_map_id),
             group_id: Set(req.0.group_id),
+            telegram_chat_id: Set(None),
         };
 
         if let Err(e) = new_user.insert(&self.db).await {
             error!("Failed to create user: {}", e);
             return AddUserApiResult::Error(Json("Ошибка записи в БД".to_string()));
-        }
-
-        if let Some(group_id) = req.0.group_id {
-            if let Ok(Some(group)) = groups::Entity::find_by_id(group_id).one(&self.db).await {
-                let now = Utc::now().naive_utc();
-                let date_end = now + chrono::Duration::days(group.duration_days as i64);
-
-                let new_rate = crate::entities::rates::ActiveModel {
-                    id: Set(Uuid::new_v4()),
-                    user_id: Set(user_id),
-                    sessions: Set(group.sessions_limit),
-                    traffic_limit: Set(group.traffic_limit),
-                    speed_limit: Set(group.speed_limit),
-                    date_end: Set(date_end),
-                    created_at: Set(now),
-                    updated_at: Set(now),
-                };
-                let _ = new_rate.insert(&self.db).await;
-            }
         }
 
         if let Some(ids) = &req.0.server_ids {
@@ -317,6 +424,17 @@ impl UsersApi {
             editable_user.is_active = Set(activation_flag);
             something_changed = true;
         }
+        if req.0.clear_telegram_chat_id.unwrap_or(false) {
+            editable_user.telegram_chat_id = Set(None);
+            something_changed = true;
+        } else if let Some(chat_id) = req.0.telegram_chat_id {
+            let chat_id = chat_id.trim();
+            if chat_id.is_empty() || chat_id.len() > 32 || chat_id.parse::<i64>().is_err() {
+                return UpdateUserApiResult::BadRequest(Json("Telegram chat ID должен быть числом".to_string()));
+            }
+            editable_user.telegram_chat_id = Set(Some(chat_id.to_owned()));
+            something_changed = true;
+        }
         if let Some(static_ip) = req.0.static_ip {
             editable_user.static_ip = Set(Some(static_ip));
             something_changed = true;
@@ -392,6 +510,7 @@ impl UsersApi {
                         pool_ids: p_ids,
                         route_map_id,
                         group_id: updated_data.group_id,
+                        telegram_chat_id: updated_data.telegram_chat_id,
                     }));
                 }
                 Err(e) => {
@@ -433,6 +552,7 @@ impl UsersApi {
             pool_ids: p_ids,
             route_map_id,
             group_id: editable_user.group_id.unwrap(),
+            telegram_chat_id: editable_user.telegram_chat_id.unwrap(),
         }))
     }
 
@@ -725,6 +845,7 @@ impl UsersApi {
 
         let mut group_based_servers_toml: Option<String> = None;
         let mut group_fallback_pub_key: Option<String> = None;
+        let mut group_crypto_algorithm: Option<String> = None;
 
         if let Some(user_group_id) = user_opt.group_id {
             let linked_pool_ids: Vec<Uuid> = group_node_pools::Entity::find()
@@ -865,6 +986,9 @@ impl UsersApi {
                             let weight = member.weight.max(1);
 
                             if emitted.insert((member.pool_id, server.id, member.protocol, dsn.clone())) {
+                                if group_crypto_algorithm.is_none() {
+                                    group_crypto_algorithm = Some(server.crypto_algorithm.clone());
+                                }
                                 if fallback_key.is_empty() {
                                     fallback_key = server.public_key.clone();
                                 }
@@ -882,8 +1006,8 @@ impl UsersApi {
                                 );
 
                                 toml_str.push_str(&format!(
-                                    "[[servers]]\nname = \"{}\"\ndsn = \"{}\"\n{}timeout_secs = 8\nserver_pub_key = \"{}\"\ngroup_name = \"{}\"\ngroup_id = \"{}\"\nweight = {}\nweigth = {}\n\n",
-                                    display_name, dsn, ssh_user, server.public_key, pool_name, pool_id, weight, weight
+                                    "[[servers]]\nname = \"{}\"\ndsn = \"{}\"\n{}timeout_secs = 8\nserver_pub_key = \"{}\"\ncrypto_algorithm = \"{}\"\ngroup_name = \"{}\"\ngroup_id = \"{}\"\nweight = {}\nweigth = {}\n\n",
+                                    display_name, dsn, ssh_user, server.public_key, server.crypto_algorithm, pool_name, pool_id, weight, weight
                                 ));
                             }
                         }
@@ -897,8 +1021,8 @@ impl UsersApi {
             }
         }
 
-        let (servers_toml, fallback_pub_key) = if let (Some(toml), Some(fb_key)) =
-            (group_based_servers_toml, group_fallback_pub_key)
+        let (servers_toml, fallback_pub_key, crypto_algorithm) = if let (Some(toml), Some(fb_key), Some(algorithm)) =
+            (group_based_servers_toml, group_fallback_pub_key, group_crypto_algorithm)
         {
             info!(
                 "[CONFIG] Generated configuration from server group(s) for user {} (group ID: {:?})",
@@ -913,7 +1037,7 @@ impl UsersApi {
                 "# =========================================================================\n",
             );
             header.push_str(&toml);
-            (header, fb_key)
+            (header, fb_key, algorithm)
         } else {
             // Фаллбак на "старый" (текущий) вариант:
             info!(
@@ -955,18 +1079,20 @@ impl UsersApi {
             );
 
             let mut fallback_pub_key = String::new();
+            let mut fallback_crypto_algorithm = String::new();
 
             for server in fallback_assigned_servers {
                 if !server.is_active {
                     continue;
                 }
 
-                if fallback_pub_key.is_empty() {
-                    fallback_pub_key = server.public_key.clone();
-                }
-
                 if server.address.trim().is_empty() {
                     continue;
+                }
+
+                if fallback_pub_key.is_empty() {
+                    fallback_pub_key = server.public_key.clone();
+                    fallback_crypto_algorithm = server.crypto_algorithm.clone();
                 }
 
                 let ssh_user = server
@@ -986,8 +1112,8 @@ impl UsersApi {
                         format!("{} [{}]", server.name.trim(), protocol.to_uppercase());
 
                     servers_toml.push_str(&format!(
-                        "[[servers]]\nname = \"{}\"\ndsn = \"{}\"\n{}timeout_secs = 8\nserver_pub_key = \"{}\"\n\n",
-                        display_name, dsn, ssh_user, server.public_key
+                        "[[servers]]\nname = \"{}\"\ndsn = \"{}\"\n{}timeout_secs = 8\nserver_pub_key = \"{}\"\ncrypto_algorithm = \"{}\"\n\n",
+                        display_name, dsn, ssh_user, server.public_key, server.crypto_algorithm
                     ));
                 };
 
@@ -1028,8 +1154,14 @@ impl UsersApi {
                 }
             }
 
-            (servers_toml, fallback_pub_key)
+            (servers_toml, fallback_pub_key, fallback_crypto_algorithm)
         };
+
+        if !servers_toml.contains("[[servers]]") {
+            return DownloadConfigResponse::Error(Json(
+                "No active server endpoints available for this user".to_string(),
+            ));
+        }
 
         let template_content = match tokio::fs::read_to_string(&self.client_template_path).await {
             Ok(content) => content,
@@ -1045,6 +1177,13 @@ impl UsersApi {
         };
 
         let mut config_output = template_content;
+        if config_output.contains("[crypto]") {
+            error!("[CONFIG TEMPLATE ERROR] Template already defines [crypto]");
+            return DownloadConfigResponse::Error(Json(
+                "Base configuration template has a conflicting crypto section".to_string(),
+            ));
+        }
+        config_output.push_str(&format!("\n[crypto]\nalgorithm = \"{}\"\n", crypto_algorithm));
         config_output.push_str(&servers_toml);
 
         let final_output = config_output
@@ -1083,7 +1222,6 @@ impl UsersApi {
     async fn download_config_qr(
         &self,
         id: poem_openapi::param::Path<Uuid>,
-        #[oai(name = "Host")] host: poem_openapi::param::Header<Option<String>>,
     ) -> QrPageResponse {
         let user_opt = match users::Entity::find_by_id(id.0).one(&self.db).await {
             Ok(Some(u)) => u,
@@ -1105,8 +1243,7 @@ impl UsersApi {
             return QrPageResponse::NotFound(Json("Client is inactive or banned".to_string()));
         }
 
-        let host_str = host.0.unwrap_or_else(|| "127.0.0.1:3000".to_string());
-        let config_url = format!("http://{}/api/v1/config/{}", host_str, id.0);
+        let config_url = format!("{}/api/v1/config/{}", public_panel_base_url(), id.0);
 
         let html_page = crate::api::api::get_qr_html_page(
             &config_url,
@@ -1122,5 +1259,25 @@ impl UsersApi {
         );
 
         QrPageResponse::Ok(PlainText(html_page))
+    }
+}
+
+#[cfg(test)]
+mod public_panel_url_tests {
+    use super::resolve_public_panel_base_url;
+
+    #[test]
+    fn accepts_external_https_url_and_removes_trailing_slash() {
+        assert_eq!(
+            resolve_public_panel_base_url(" https://anet.vpn-rus.top/ "),
+            Some("https://anet.vpn-rus.top".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_localhost_and_non_https_urls() {
+        assert!(resolve_public_panel_base_url("http://127.0.0.1:8088").is_none());
+        assert!(resolve_public_panel_base_url("https://localhost:8088").is_none());
+        assert!(resolve_public_panel_base_url("https://[::1]:8088").is_none());
     }
 }

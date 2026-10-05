@@ -20,6 +20,7 @@ const form = ref({
   name: '',
   address: '', // Заменили dsn на address
   public_key: '',
+  crypto_algorithm: 'chacha20-poly1305' as Server['crypto_algorithm'],
   ssh_user: '',
   is_active: true,
   quic_port: null as number | null,
@@ -104,6 +105,7 @@ watch(
           name: val.name,
           address: val.address, // Заменили dsn на address
           public_key: val.public_key,
+          crypto_algorithm: val.crypto_algorithm,
           ssh_user: val.ssh_user || '',
           is_active: val.is_active,
           quic_port: val.quic_port !== undefined ? val.quic_port : null,
@@ -119,9 +121,24 @@ watch(
 
 const save = async () => {
   if (!props.server) return
+  const normalizePort = (value: unknown): number | null => value === '' || value == null ? null : Number(value)
+  const payload = {
+    ...form.value,
+    quic_port: normalizePort(form.value.quic_port),
+    ssh_port: normalizePort(form.value.ssh_port),
+    vnc_port: normalizePort(form.value.vnc_port),
+    websocket_url: form.value.websocket_url.trim() || null,
+    ahttp_url: form.value.ahttp_url.trim() || null,
+    ssh_user: form.value.ssh_user.trim() || null,
+  }
+  if ([payload.quic_port, payload.ssh_port, payload.vnc_port]
+      .some(port => port !== null && (!Number.isInteger(port) || port < 1 || port > 65535))) {
+    message.error('Порт должен быть целым числом от 1 до 65535')
+    return
+  }
   loading.value = true
   try {
-    await UpdateServer(props.server.id, form.value)
+    await UpdateServer(props.server.id, payload)
     emit('updated')
     show.value = false
   } catch (e: any) {
@@ -157,6 +174,13 @@ const close = () => {
           <v-text-field v-model="form.address" label="IP Адрес или Домен" placeholder="e.g. 64.188.118.201 или vpn.ziga.com" variant="filled" class="mb-3" />
 
           <v-text-field v-model="form.public_key" label="Публичный ключ сервера" variant="filled" class="mb-3" />
+          <v-select
+              v-model="form.crypto_algorithm"
+              label="Алгоритм шифрования"
+              :items="[{ title: 'ChaCha20-Poly1305', value: 'chacha20-poly1305' }, { title: 'ГОСТ Кузнечик-MGM', value: 'kuznyechik-mgm' }]"
+              variant="filled"
+              class="mb-3"
+          />
           <v-text-field v-model="form.ssh_user" label="Пользователь SSH" variant="filled" class="mb-3" />
 
           <!-- Размещаем порты side-by-side -->

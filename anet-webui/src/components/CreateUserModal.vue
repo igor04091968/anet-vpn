@@ -30,6 +30,7 @@ const defaultDraft = (): User => ({
   pool_ids: [],
   route_map_id: null,
   group_id: null,
+  telegram_chat_id: null,
 })
 const draft = ref<User>(defaultDraft())
 

@@ -88,6 +88,9 @@ onMounted(async () => {
         placeholder="Выберите группу пользователей"
         class="mb-3"
     />
+    <div v-if="user.group_id" class="text-caption text-medium-emphasis mb-3">
+      Если к группе привязаны пулы, конфиг формируется из них. Выбор отдельных серверов ниже на него не влияет.
+    </div>
 
     <!-- Балансируемые pools -->
     <v-select
