@@ -21,6 +21,7 @@ use tokio::net::UdpSocket;
 /// Улучшенная реализация AsyncUdpSocket с полным сокрытием QUIC
 pub struct AnetUdpSocket {
     io: Arc<UdpSocket>,
+    _connection_permit: Option<tokio::sync::OwnedSemaphorePermit>,
     cipher: Arc<Cipher>,
     nonce_prefix: Vec<u8>,
     sequence: Arc<AtomicU64>,
@@ -36,11 +37,22 @@ impl AnetUdpSocket {
     ) -> Self {
         Self {
             io,
+            _connection_permit: None,
             cipher,
             nonce_prefix,
             sequence: Arc::new(AtomicU64::new(0)),
             stealth_config,
         }
+    }
+}
+
+impl AnetUdpSocket {
+    pub(crate) fn with_connection_permit(
+        mut self,
+        permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    ) -> Self {
+        self._connection_permit = permit;
+        self
     }
 }
 

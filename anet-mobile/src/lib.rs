@@ -1,20 +1,21 @@
 include!(concat!(env!("OUT_DIR"), "/built.rs"));
 
 mod android_impl;
+mod diagnostics;
 
 use crate::android_impl::AndroidCallbackTunFactory;
 use android_logger::Config;
 use anet_client_core::client::AnetClient;
 use anet_client_core::config::CoreConfig;
 use anet_client_core::events::{self, AnetEvent, ClientState, EventHandler, client_state, status};
-use anet_client_core::updater::{GithubRelease, Updater};
 use anet_client_core::platform::NoOpRouteManager;
+use anet_client_core::updater::{GithubRelease, Updater};
 use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
 use jni::{JNIEnv, JavaVM};
 use log::{LevelFilter, error, info};
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::runtime::Runtime;
 
 // Глобальные переменные состояния клиентов и асинхронного рантайма
@@ -65,7 +66,9 @@ fn inspect_config(config_toml: &str) -> String {
 
     let mut result = String::from("OK");
     let has_groups = config.servers.iter().any(|s| {
-        s.group_name.as_ref().map_or(false, |g| !g.trim().is_empty())
+        s.group_name
+            .as_ref()
+            .map_or(false, |g| !g.trim().is_empty())
     });
 
     if has_groups {
@@ -146,7 +149,8 @@ fn event_message(event: AnetEvent) -> Option<String> {
         AnetEvent::UpdateReady => Some("Update downloaded to cache".to_string()),
         AnetEvent::Stats { .. }
         | AnetEvent::TrafficUpdate { .. }
-        | AnetEvent::ClientStateChanged { .. } | AnetEvent::AccountInfo(_) => None,
+        | AnetEvent::ClientStateChanged { .. }
+        | AnetEvent::AccountInfo(_) => None,
     }
 }
 
@@ -267,10 +271,7 @@ pub extern "system" fn Java_org_alco_anet_MainActivity_getVpnServerName(
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_org_alco_anet_MainActivity_clearUiCallback(
-    env: JNIEnv,
-    this: JObject,
-) {
+pub extern "system" fn Java_org_alco_anet_MainActivity_clearUiCallback(env: JNIEnv, this: JObject) {
     let mut callback = UI_CALLBACK_REF.lock().unwrap();
     if callback
         .as_ref()
@@ -465,7 +466,7 @@ pub extern "system" fn Java_org_alco_anet_MainActivity_checkUpdates(
                 } else {
                     url
                 }
-            },
+            }
             Err(_) => "https://api.github.com/repos/ZeroTworu/anet/releases/latest".to_string(),
         }
     } else {
@@ -490,7 +491,9 @@ pub extern "system" fn Java_org_alco_anet_MainActivity_checkUpdates(
                 events::emit(AnetEvent::UpdateAvailable(release));
             }
             Ok(None) => {
-                events::emit(AnetEvent::UpdateStatus("У вас установлена актуальная версия.".into()));
+                events::emit(AnetEvent::UpdateStatus(
+                    "У вас установлена актуальная версия.".into(),
+                ));
             }
             Err(e) => {
                 error!("[UPDATER] Error: {}", e);
@@ -501,7 +504,11 @@ pub extern "system" fn Java_org_alco_anet_MainActivity_checkUpdates(
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_org_alco_anet_MainActivity_startDownload(mut env: JNIEnv, _this: JObject, j_path: JString) {
+pub extern "system" fn Java_org_alco_anet_MainActivity_startDownload(
+    mut env: JNIEnv,
+    _this: JObject,
+    j_path: JString,
+) {
     let path: String = env.get_string(&j_path).unwrap().into();
     let release_opt = PENDING_RELEASE.lock().unwrap().take();
 
@@ -519,13 +526,19 @@ pub extern "system" fn Java_org_alco_anet_MainActivity_startDownload(mut env: JN
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_org_alco_anet_MainActivity_getAppVersion(env: JNIEnv, _this: JClass) -> jni::sys::jstring {
+pub extern "system" fn Java_org_alco_anet_MainActivity_getAppVersion(
+    env: JNIEnv,
+    _this: JClass,
+) -> jni::sys::jstring {
     let version = format!("{} ({})", GIT_TAG, COMMIT_HASH);
     env.new_string(version).unwrap().into_raw()
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_org_alco_anet_MainActivity_getBuildInfo(env: JNIEnv, _this: JClass) -> jni::sys::jstring {
+pub extern "system" fn Java_org_alco_anet_MainActivity_getBuildInfo(
+    env: JNIEnv,
+    _this: JClass,
+) -> jni::sys::jstring {
     let info = format!("Type: {} | Time: {}", BUILD_TYPE, BUILD_TIME);
     env.new_string(info).unwrap().into_raw()
 }
@@ -589,7 +602,11 @@ pub extern "system" fn Java_org_alco_anet_ANetVpnService_connectVpn(
         Err(e) => {
             error!("Failed to parse TOML config: {}", e);
             status(format!("Failed to parse TOML config: {}", e));
-            client_state(ClientState::Failed, format!("Invalid configuration: {e}"), None);
+            client_state(
+                ClientState::Failed,
+                format!("Invalid configuration: {e}"),
+                None,
+            );
             return;
         }
     };
@@ -598,58 +615,102 @@ pub extern "system" fn Java_org_alco_anet_ANetVpnService_connectVpn(
     rt.spawn(async move {
         let client = {
             let _lifecycle = CLIENT_LIFECYCLE.lock().await;
-            if CLIENT_GENERATION.load(Ordering::SeqCst) != generation { return; }
+            if CLIENT_GENERATION.load(Ordering::SeqCst) != generation {
+                return;
+            }
+            diagnostics::cancel_and_wait().await;
             let old_client = CLIENT.lock().unwrap().take();
             if let Some(client) = old_client {
                 info!("Rust JNI: Stopping old active client task...");
                 let _ = client.stop().await;
             }
-            if CLIENT_GENERATION.load(Ordering::SeqCst) != generation { return; }
+            if CLIENT_GENERATION.load(Ordering::SeqCst) != generation {
+                return;
+            }
             if let Err(error) = config.sanitize() {
-                client_state(ClientState::Failed, format!("Invalid configuration: {error}"), None);
+                client_state(
+                    ClientState::Failed,
+                    format!("Invalid configuration: {error}"),
+                    None,
+                );
                 return;
             }
 
-        let has_groups = config.servers.iter().any(|s| {
-            s.group_name.as_ref().map_or(false, |g| !g.trim().is_empty())
-        });
+            let has_groups = config.servers.iter().any(|s| {
+                s.group_name
+                    .as_ref()
+                    .map_or(false, |g| !g.trim().is_empty())
+            });
 
-        if has_groups {
-            let selected_group_id = if !selected_server.is_empty() {
-                selected_server.clone()
-            } else {
-                config.servers.iter()
-                    .find_map(|s| {
-                        if s.group_name.as_deref().map_or(true, |g| g.trim().is_empty()) { return None; }
-                        Some(s.group_id.as_deref().unwrap_or(s.group_name.as_ref().unwrap()).trim().to_string())
+            if has_groups {
+                let selected_group_id = if !selected_server.is_empty() {
+                    selected_server.clone()
+                } else {
+                    config
+                        .servers
+                        .iter()
+                        .find_map(|s| {
+                            if s.group_name
+                                .as_deref()
+                                .map_or(true, |g| g.trim().is_empty())
+                            {
+                                return None;
+                            }
+                            Some(
+                                s.group_id
+                                    .as_deref()
+                                    .unwrap_or(s.group_name.as_ref().unwrap())
+                                    .trim()
+                                    .to_string(),
+                            )
+                        })
+                        .unwrap_or_default()
+                };
+
+                let mut group_servers: Vec<_> = config
+                    .servers
+                    .iter()
+                    .filter(|s| {
+                        if s.group_name
+                            .as_deref()
+                            .map_or(true, |g| g.trim().is_empty())
+                        {
+                            return false;
+                        }
+                        let g_id = s
+                            .group_id
+                            .as_deref()
+                            .unwrap_or(s.group_name.as_ref().unwrap())
+                            .trim();
+                        g_id == selected_group_id.as_str()
                     })
-                    .unwrap_or_default()
-            };
+                    .cloned()
+                    .collect();
 
-            let mut group_servers: Vec<_> = config.servers
-                .iter()
-                .filter(|s| {
-                    if s.group_name.as_deref().map_or(true, |g| g.trim().is_empty()) { return false; }
-                    let g_id = s.group_id.as_deref().unwrap_or(s.group_name.as_ref().unwrap()).trim();
-                    g_id == selected_group_id.as_str()
-                })
-                .cloned()
-                .collect();
+                group_servers.sort_by(|a, b| b.weight().cmp(&a.weight()));
 
-            group_servers.sort_by(|a, b| b.weight().cmp(&a.weight()));
-
-            if !group_servers.is_empty() {
-                config.servers = group_servers;
-                anet_client_core::events::status(format!("Группа выбрана (id): {}", selected_group_id));
+                if !group_servers.is_empty() {
+                    config.servers = group_servers;
+                    anet_client_core::events::status(format!(
+                        "Группа выбрана (id): {}",
+                        selected_group_id
+                    ));
+                }
+            } else if !selected_server.is_empty() {
+                if let Some(idx) = config.servers.iter().position(|s| s.dsn == selected_server) {
+                    config.servers.rotate_left(idx);
+                    anet_client_core::events::status(format!(
+                        "Приоритет установлен: {}",
+                        selected_server
+                    ));
+                }
             }
-        } else if !selected_server.is_empty() {
-            if let Some(idx) = config.servers.iter().position(|s| s.dsn == selected_server) {
-                config.servers.rotate_left(idx);
-                anet_client_core::events::status(format!("Приоритет установлен: {}", selected_server));
-            }
-        }
 
-            let tun_factory = Box::new(AndroidCallbackTunFactory::new(jvm_for_factory, this_ref.clone(), config.clone()));
+            let tun_factory = Box::new(AndroidCallbackTunFactory::new(
+                jvm_for_factory,
+                this_ref.clone(),
+                config.clone(),
+            ));
             let route_manager = Box::new(NoOpRouteManager);
             let client = Arc::new(AnetClient::new(config, tun_factory, route_manager));
             *CLIENT.lock().unwrap() = Some(client.clone());
@@ -671,7 +732,10 @@ pub extern "system" fn Java_org_alco_anet_ANetVpnService_connectVpn(
 // ПЕРЕНЕСЕНО ИЗ 073: Внешний триггер мгновенного переподключения
 // =========================================================================
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_org_alco_anet_ANetVpnService_reconnectVpn(_env: JNIEnv, _class: JClass) {
+pub extern "system" fn Java_org_alco_anet_ANetVpnService_reconnectVpn(
+    _env: JNIEnv,
+    _class: JClass,
+) {
     info!("Rust: reconnectVpn JNI trigger received");
     let client_opt = {
         let client_guard = CLIENT.lock().unwrap();
@@ -684,6 +748,7 @@ pub extern "system" fn Java_org_alco_anet_ANetVpnService_reconnectVpn(_env: JNIE
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_alco_anet_ANetVpnService_stopVpn(_env: JNIEnv, _class: JClass) {
+    diagnostics::cancel_current();
     info!("Rust: stopVpn JNI trigger received");
     client_state(ClientState::Stopping, "Stopping VPN", None);
 
@@ -707,16 +772,26 @@ pub extern "system" fn Java_org_alco_anet_ANetVpnService_stopVpn(_env: JNIEnv, _
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_org_alco_anet_MainActivity_getPendingTag(env: JNIEnv, _this: JObject) -> jni::sys::jstring {
+pub extern "system" fn Java_org_alco_anet_MainActivity_getPendingTag(
+    env: JNIEnv,
+    _this: JObject,
+) -> jni::sys::jstring {
     let guard = PENDING_RELEASE.lock().unwrap();
-    let tag = guard.as_ref().map(|r| r.tag_name.clone()).unwrap_or_else(|| "v0.0.0".to_string());
+    let tag = guard
+        .as_ref()
+        .map(|r| r.tag_name.clone())
+        .unwrap_or_else(|| "v0.0.0".to_string());
     env.new_string(tag).unwrap().into_raw()
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_org_alco_anet_MainActivity_getPendingBody(env: JNIEnv, _this: JObject) -> jni::sys::jstring {
+pub extern "system" fn Java_org_alco_anet_MainActivity_getPendingBody(
+    env: JNIEnv,
+    _this: JObject,
+) -> jni::sys::jstring {
     let guard = PENDING_RELEASE.lock().unwrap();
-    let body = guard.as_ref()
+    let body = guard
+        .as_ref()
         .and_then(|r| r.body.clone())
         .unwrap_or_else(|| "Описание изменений отсутствует.".to_string());
     env.new_string(body).unwrap().into_raw()

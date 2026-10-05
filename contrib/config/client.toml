@@ -1,6 +1,15 @@
 # =========================================================================
 # ANET Client: Основные настройки соединения
 # =========================================================================
+# External connection budget per client instance, across all configured servers.
+# 0 preserves the previous unlimited behavior. To enable: max_connections = 2.
+# Counts pending connects and open sockets, including idle AHTTP pool sockets.
+[connection_limits]
+max_connections = 0
+# Minimum gap between new connection attempts (including retries); 0 disables pacing.
+# Example starting point for testing: 500 ms. This does not guarantee DPI immunity.
+min_connect_interval_ms = 0
+
 [crypto]
 # GOST-пакеты начинаются с открытого маркера ANETGOST1 для распознавания TSPU.
 # Маркер не содержит ключей или данных туннеля. Значение должно совпадать
@@ -129,9 +138,9 @@ update_url = "https://api.github.com/repos/ZeroTworu/anet/releases/latest"
 [ahttp]
 # --- Параметры параллельности и коалесценции пакетов ---
 
-# Количество параллельно открываемых HTTP/2 запросов в сторону CDN (Concurrency).
-# Рекомендуемый диапазон: от 4 до 16. Полностью нивелирует задержки пинга (RTT) за счет
-# мультиплексирования независимых сетевых фреймов внутри одной TCP-сессии.
+# Параллельные HTTP-запросы; это не предел числа TCP/TLS-соединений.
+# Для ограничения внешних сокетов используйте [connection_limits].
+# В HTTP/2 несколько запросов могут использовать одно соединение.
 concurrency = 8
 
 # Максимальный размер пачки пакетов в байтах перед принудительной отправкой (бюджет коалесценции).

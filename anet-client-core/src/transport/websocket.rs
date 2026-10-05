@@ -1,6 +1,7 @@
 use super::{ClientTransport, ConnectionResult};
 use crate::auth::{AuthChannel, AuthHandler};
 use crate::config::{CoreConfig, ServerConfig};
+use crate::connection_limits::{ConnectionLimiter, LimitedTcpStream};
 use anet_common::consts::{CHANNEL_BUFFER_SIZE, COALESCE_BUDGET_BYTES, MAX_PACKET_SIZE};
 use anet_common::handshake_fragmentation::FragmentConfig;
 use anet_common::stream_framing::{frame_packet, frame_packet_into, read_next_packet};
@@ -20,7 +21,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
-use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -28,7 +28,7 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, frame::coding::CloseCode};
 use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream, client_async_tls_with_config};
 
-type ClientSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+type ClientSocket = WebSocketStream<MaybeTlsStream<LimitedTcpStream>>;
 
 const CHROME_USER_AGENTS: &[&str] = &[
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
@@ -207,11 +207,20 @@ impl AuthChannel for WebSocketAuthChannel {
 pub struct WebSocketTransport {
     config: CoreConfig,
     server: ServerConfig,
+    limiter: Arc<ConnectionLimiter>,
 }
 
 impl WebSocketTransport {
-    pub fn new(config: CoreConfig, server: ServerConfig) -> Self {
-        Self { config, server }
+    pub(crate) fn with_limiter(
+        config: CoreConfig,
+        server: ServerConfig,
+        limiter: Arc<ConnectionLimiter>,
+    ) -> Self {
+        Self {
+            config,
+            server,
+            limiter,
+        }
     }
 }
 
@@ -268,6 +277,7 @@ async fn connect_authenticated(
     server: &ServerConfig,
     profile: &BrowserProfile,
     resume_session_id: Option<String>,
+    limiter: &Arc<ConnectionLimiter>,
 ) -> Result<(
     ClientSocket,
     anet_common::protocol::AuthResponse,
@@ -283,7 +293,8 @@ async fn connect_authenticated(
         .max_frame_size(Some(MAX_WS_MESSAGE_SIZE));
 
     let endpoint = server.endpoint()?;
-    let tcp_stream = TcpStream::connect(&endpoint)
+    let tcp_stream = limiter
+        .connect_tcp(&endpoint)
         .await
         .with_context(|| format!("failed to connect to WebSocket endpoint {endpoint}"))?;
 
@@ -337,12 +348,19 @@ async fn close_browser_session(socket: &mut ClientSocket) {
 impl ClientTransport for WebSocketTransport {
     async fn connect(&self) -> Result<ConnectionResult> {
         let browser_profile = BrowserProfile::random();
-        let (initial_socket, auth_response, initial_key, remote_ip) =
-            connect_authenticated(&self.config, &self.server, &browser_profile, None).await?;
+        let (initial_socket, auth_response, initial_key, remote_ip) = connect_authenticated(
+            &self.config,
+            &self.server,
+            &browser_profile,
+            None,
+            &self.limiter,
+        )
+        .await?;
         let expected_ip = auth_response.ip.clone();
         let expected_gateway = auth_response.gateway.clone();
         let logical_session_id = auth_response.session_id.clone();
         let initial_response = auth_response.clone();
+        let limiter = self.limiter.clone();
         let config = self.config.clone();
         let server = self.server.clone();
         let health_pause = Arc::new(AtomicBool::new(false));
@@ -454,6 +472,7 @@ impl ClientTransport for WebSocketTransport {
                     }
                 }
 
+                drop(socket);
                 info!("[WebSocket] Browser-like session rotation; reconnecting the same endpoint");
                 let navigation_gap_ms = rand::rngs::OsRng.gen_range(450..=1800);
                 tokio::time::sleep(Duration::from_millis(navigation_gap_ms)).await;
@@ -469,6 +488,7 @@ impl ClientTransport for WebSocketTransport {
                                 &server,
                                 &browser_profile,
                                 Some(logical_session_id.clone()),
+                                &limiter,
                             ),
                         )
                         .await
@@ -505,7 +525,11 @@ impl ClientTransport for WebSocketTransport {
                         key = new_key;
                         supervisor_health_pause.store(false, Ordering::Release);
                     }
-                    None => break 'sessions,
+                    None => {
+                        tunnel_reader_task.abort();
+                        let _ = tunnel_reader_task.await;
+                        return;
+                    }
                 }
             }
             close_browser_session(&mut socket).await;

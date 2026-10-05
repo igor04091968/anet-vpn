@@ -1,0 +1,7 @@
+ANet DPI helper contains an adapted TLS fingerprint selection table from
+hyperion-cs/dpi-checkers, commit bb38d7aad0edfffe6d6304f469af48fe8df7c457,
+ru/dpi-ch/inetutil/tls.go, licensed under Apache License 2.0.
+Changes: library C ABI, borrowed socket input, bounded deadlines/cancellation,
+structured results, no terminal UI, network discovery, or automatic updater.
+The remaining adapter code was written for ANet. Dependency licenses must
+also accompany binary distribution; see THIRD_PARTY_LICENSES.

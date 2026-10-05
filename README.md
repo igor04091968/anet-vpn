@@ -32,6 +32,8 @@
 
 Как мог накидал: [Документацию](./contrib/docs/anet.ru.md)
 
+Развёртывание новой GOST-площадки и отдельных VPN-узлов: [Ansible runbook](./ops/orchestration/README.ru.md).
+
 А это уже полностью нейронка: [AUTH HTTP API](./contrib/docs/http.api.ru.md)
 
 ## Сборка

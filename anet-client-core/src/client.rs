@@ -35,9 +35,12 @@ use crate::config::{CoreConfig, ServerConfig};
 use crate::dns::{DnsManager, get_dns_manager};
 use crate::events::{AccountInfo, ClientState, account_info, client_state, err, status, warn};
 use crate::traits::{RouteManager, TunFactory};
-use crate::transport::factory::create_transport;
+use crate::transport::factory::create_transport_with_limiter;
 
 struct RunningSession {
+    verification: serde_json::Value,
+    rx_bytes: Arc<AtomicU64>,
+    tx_bytes: Arc<AtomicU64>,
     endpoint: Option<Endpoint>,
     shutdown_notify: Arc<Notify>,
     reconnect_signal: Arc<Notify>,
@@ -49,6 +52,7 @@ struct RunningSession {
 
 pub struct AnetClient {
     config: CoreConfig,
+    connection_limiter: Arc<crate::connection_limits::ConnectionLimiter>,
     tun_factory: Box<dyn TunFactory>,
     route_manager: Box<dyn RouteManager>,
     dns_manager: Box<dyn DnsManager>,
@@ -65,7 +69,11 @@ impl AnetClient {
         route_manager: Box<dyn RouteManager>,
     ) -> Self {
         let dns_manager = get_dns_manager();
+        let connection_limiter = Arc::new(crate::connection_limits::ConnectionLimiter::new(
+            &config.connection_limits,
+        ));
         Self {
+            connection_limiter,
             config,
             tun_factory,
             route_manager,
@@ -75,6 +83,40 @@ impl AnetClient {
             is_active: AtomicBool::new(false),
             cancel_signal: Arc::new(Notify::new()),
         }
+    }
+
+    pub fn connection_verification(&self) -> serde_json::Value {
+        if self.stop_requested.load(Ordering::SeqCst) {
+            return serde_json::json!({"authenticated":false,"data_verified":false});
+        }
+        let session = self.session.lock().unwrap();
+        if let Some(s) = session.as_ref() {
+            let mut result = s.verification.clone();
+            let rx = s.rx_bytes.load(Ordering::Relaxed);
+            let tx = s.tx_bytes.load(Ordering::Relaxed);
+            result["received_bytes"] = rx.into();
+            result["sent_bytes"] = tx.into();
+            result["data_verified"] = (rx >= 65536 && tx > 0).into();
+            result
+        } else {
+            serde_json::json!({"authenticated":false,"data_verified":false})
+        }
+    }
+
+    pub async fn diagnose(
+        &self,
+        options: crate::diagnostics::DiagnosticOptions,
+        cancel: tokio_util::sync::CancellationToken,
+        environment: std::sync::Arc<dyn crate::diagnostics::SocketEnvironment>,
+    ) -> crate::diagnostics::DiagnosticReport {
+        crate::diagnostics::run_shared(
+            &self.config,
+            self.connection_limiter.clone(),
+            options,
+            cancel,
+            environment,
+        )
+        .await
     }
 
     pub fn get_config(&self) -> CoreConfig {
@@ -154,6 +196,11 @@ impl AnetClient {
             return Err(e);
         }
 
+        info!(
+            "[ConnectionLimits] max_connections={} (0=unlimited), min_connect_interval_ms={}",
+            config_clone.connection_limits.max_connections,
+            config_clone.connection_limits.min_connect_interval_ms,
+        );
         info!("[Core] Starting failover connection loop...");
         warn("[Core] Starting connection loop...");
         client_state(ClientState::Connecting, "Starting connection loop", None);
@@ -341,7 +388,8 @@ impl AnetClient {
         let mut config_clone = self.config.clone();
         config_clone.sanitize()?;
 
-        let transport = create_transport(&config_clone, server)?;
+        let transport =
+            create_transport_with_limiter(&config_clone, server, self.connection_limiter.clone())?;
         let conn_timeout = Duration::from_secs(server.timeout_secs.max(15));
 
         let connect_fut = transport.connect();
@@ -373,6 +421,12 @@ impl AnetClient {
             return Ok(());
         }
 
+        status(format!(
+            "Сервер подтвердил авторизацию ANet: транспорт {:?}, шифрование {:?}, MTU {}. Проверка передачи данных выполняется рабочим туннелем.",
+            server.mode()?,
+            config_clone.crypto.algorithm,
+            result.auth_response.mtu
+        ));
         info!("[Core] Authentication successful. Configuring tunnel interface...");
         status("[Core] Authentication successful. Configuring tunnel interface...");
 
@@ -712,6 +766,9 @@ impl AnetClient {
         {
             let mut state = self.session.lock().unwrap();
             *state = Some(RunningSession {
+                verification: serde_json::json!({"authenticated":true,"server_name":server.get_name(),"dsn":server.dsn,"transport":format!("{:?}",server.mode()?).to_lowercase(),"crypto":format!("{:?}",config_clone.crypto.algorithm),"mtu":result.auth_response.mtu}),
+                rx_bytes: total_rx_bytes.clone(),
+                tx_bytes: total_tx_bytes.clone(),
                 endpoint: result.endpoint,
                 shutdown_notify: shutdown_notify.clone(),
                 reconnect_signal: reconnect_signal.clone(),

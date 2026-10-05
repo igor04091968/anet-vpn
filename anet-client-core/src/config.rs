@@ -379,8 +379,20 @@ impl Default for AhttpConfig {
     }
 }
 
+/// Limits external transport sockets per AnetClient instance (not inner VPN flows).
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct ConnectionLimitsConfig {
+    /// Zero preserves the previous unlimited behavior.
+    pub max_connections: usize,
+    /// Minimum gap between starts of new external connections, including retries.
+    pub min_connect_interval_ms: u64,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct CoreConfig {
+    #[serde(default)]
+    pub connection_limits: ConnectionLimitsConfig,
     #[serde(default)]
     pub main: MainConfig,
 
@@ -414,6 +426,15 @@ pub struct CoreConfig {
 impl CoreConfig {
     /// Проверяет обязательный список DSN-серверов.
     pub fn sanitize(&mut self) -> anyhow::Result<()> {
+        if self.connection_limits.max_connections > 65535 {
+            anyhow::bail!("connection_limits.max_connections must be between 0 and 65535");
+        }
+        if self.connection_limits.min_connect_interval_ms > 86_400_000 {
+            anyhow::bail!("connection_limits.min_connect_interval_ms must not exceed 86400000");
+        }
+        if self.ahttp.concurrency == 0 {
+            anyhow::bail!("ahttp.concurrency must be at least 1");
+        }
         if self.servers.is_empty() {
             anyhow::bail!("No servers defined in [[servers]]");
         }
@@ -533,5 +554,36 @@ mod tests {
             gost.crypto.algorithm,
             anet_common::encryption::CryptoAlgorithm::KuznyechikMgm
         );
+    }
+}
+
+#[cfg(test)]
+mod connection_limit_tests {
+    use super::CoreConfig;
+    #[test]
+    fn defaults_and_custom_connection_limits_are_loaded() {
+        let old = "[[servers]]\ndsn = \"https://vpn.example.com\"";
+        let config: CoreConfig = toml::from_str(old).unwrap();
+        assert_eq!(config.connection_limits.max_connections, 0);
+        assert_eq!(config.connection_limits.min_connect_interval_ms, 0);
+        let custom = format!(
+            "[connection_limits]\nmax_connections = 2\nmin_connect_interval_ms = 500\n{old}"
+        );
+        let mut config: CoreConfig = toml::from_str(&custom).unwrap();
+        config.sanitize().unwrap();
+        assert_eq!(config.connection_limits.max_connections, 2);
+        assert_eq!(config.connection_limits.min_connect_interval_ms, 500);
+        config.connection_limits.max_connections = 65536;
+        assert!(config.sanitize().is_err());
+    }
+    #[test]
+    fn rejects_zero_request_concurrency_and_out_of_range_interval() {
+        let mut config: CoreConfig =
+            toml::from_str("[[servers]]\ndsn = \"https://vpn.example.com\"").unwrap();
+        config.ahttp.concurrency = 0;
+        assert!(config.sanitize().is_err());
+        config.ahttp.concurrency = 1;
+        config.connection_limits.min_connect_interval_ms = 86_400_001;
+        assert!(config.sanitize().is_err());
     }
 }

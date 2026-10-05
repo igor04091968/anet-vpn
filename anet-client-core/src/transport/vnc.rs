@@ -1,6 +1,7 @@
 use super::{ClientTransport, ConnectionResult};
 use crate::auth::{AuthChannel, AuthHandler};
 use crate::config::{CoreConfig, ServerConfig};
+use crate::connection_limits::{ConnectionLimiter, LimitedTcpStream};
 use anet_common::consts::{CRYPTO_COALESCE_BUDGET_BYTES, MAX_PACKET_SIZE, PADDING_MTU};
 use anet_common::handshake_fragmentation::{FragmentConfig, write_fragmented};
 use anet_common::stream_framing::{frame_packet, read_next_packet};
@@ -21,14 +22,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
 use tokio::sync::{Mutex, mpsc};
 
 const RFB_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_PENDING_JITTER_PACKETS: usize = 256;
 
 struct VncAuthChannel {
-    stream: Mutex<TcpStream>,
+    stream: Mutex<LimitedTcpStream>,
 }
 
 #[async_trait]
@@ -52,11 +52,20 @@ impl AuthChannel for VncAuthChannel {
 pub struct VncTransport {
     config: CoreConfig,
     server: ServerConfig,
+    limiter: Arc<ConnectionLimiter>,
 }
 
 impl VncTransport {
-    pub fn new(config: CoreConfig, server: ServerConfig) -> Self {
-        Self { config, server }
+    pub(crate) fn with_limiter(
+        config: CoreConfig,
+        server: ServerConfig,
+        limiter: Arc<ConnectionLimiter>,
+    ) -> Self {
+        Self {
+            config,
+            server,
+            limiter,
+        }
     }
 }
 
@@ -66,9 +75,10 @@ impl ClientTransport for VncTransport {
         let addr = resolve_address(&self.server.endpoint()?)?;
         info!("[VNC] Connecting to RFB endpoint {addr}");
 
-        let mut stream = tokio::time::timeout(RFB_HANDSHAKE_TIMEOUT, TcpStream::connect(addr))
-            .await
-            .context("timed out connecting to the VNC endpoint")??;
+        let mut stream =
+            tokio::time::timeout(RFB_HANDSHAKE_TIMEOUT, self.limiter.connect_tcp(addr))
+                .await
+                .context("timed out connecting to the VNC endpoint")??;
         stream.set_nodelay(true)?;
         info!(
             "[VNC] TCP socket connected to {addr} (local: {:?}, nodelay: true)",
@@ -195,7 +205,7 @@ fn resolve_address(address: &str) -> Result<SocketAddr> {
         .with_context(|| format!("VNC endpoint {address} resolved to no addresses"))
 }
 
-async fn emulate_rfb_client_handshake(stream: &mut TcpStream) -> Result<()> {
+async fn emulate_rfb_client_handshake(stream: &mut LimitedTcpStream) -> Result<()> {
     let mut version = [0; 12];
     stream.read_exact(&mut version).await?;
     anyhow::ensure!(&version == RFB_VERSION, "server does not speak RFB 3.8");
@@ -221,7 +231,7 @@ async fn emulate_rfb_client_handshake(stream: &mut TcpStream) -> Result<()> {
     read_server_init(stream).await
 }
 
-async fn read_server_init(stream: &mut TcpStream) -> Result<()> {
+async fn read_server_init(stream: &mut LimitedTcpStream) -> Result<()> {
     let mut fixed = [0; 24];
     stream.read_exact(&mut fixed).await?;
     let width = u16::from_be_bytes(fixed[0..2].try_into().expect("fixed-size field"));
@@ -240,7 +250,7 @@ async fn read_server_init(stream: &mut TcpStream) -> Result<()> {
 
 async fn send_to_server(
     mut packet_rx: mpsc::Receiver<Bytes>,
-    mut writer: tokio::io::WriteHalf<TcpStream>,
+    mut writer: tokio::io::WriteHalf<LimitedTcpStream>,
     cipher: Arc<anet_common::encryption::Cipher>,
     sequence: Arc<AtomicU64>,
     nonce_prefix: Vec<u8>,
@@ -399,7 +409,7 @@ fn schedule_with_jitter(
 }
 
 async fn receive_from_server(
-    mut reader: tokio::io::ReadHalf<TcpStream>,
+    mut reader: tokio::io::ReadHalf<LimitedTcpStream>,
     mut tunnel_writer: tokio::io::WriteHalf<tokio::io::DuplexStream>,
     cipher: Arc<anet_common::encryption::Cipher>,
 ) -> Result<()> {

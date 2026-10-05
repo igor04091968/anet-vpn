@@ -1,6 +1,7 @@
 use super::{ClientTransport, ConnectionResult};
 use crate::auth::{AuthHandler, StreamAuthChannel};
 use crate::config::{CoreConfig, ServerConfig};
+use crate::connection_limits::ConnectionLimiter;
 use anet_common::consts::{CHANNEL_BUFFER_SIZE, MAX_PACKET_SIZE};
 use anet_common::stream_framing::{frame_packet, read_next_packet};
 use anyhow::{Context, Result};
@@ -14,7 +15,6 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
-use tokio::net::TcpStream;
 use tokio::sync::{Mutex, mpsc};
 
 const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -38,11 +38,20 @@ impl Handler for ClientHandler {
 pub struct SshTransport {
     config: CoreConfig,
     server: ServerConfig,
+    limiter: Arc<ConnectionLimiter>,
 }
 
 impl SshTransport {
-    pub fn new(config: CoreConfig, server: ServerConfig) -> Self {
-        Self { config, server }
+    pub(crate) fn with_limiter(
+        config: CoreConfig,
+        server: ServerConfig,
+        limiter: Arc<ConnectionLimiter>,
+    ) -> Self {
+        Self {
+            config,
+            server,
+            limiter,
+        }
     }
 }
 
@@ -65,7 +74,7 @@ impl ClientTransport for SshTransport {
             ..Default::default()
         });
 
-        let stream = tokio::time::timeout(SSH_CONNECT_TIMEOUT, TcpStream::connect(address))
+        let stream = tokio::time::timeout(SSH_CONNECT_TIMEOUT, self.limiter.connect_tcp(address))
             .await
             .context("timed out connecting to the SSH endpoint")??;
         stream.set_nodelay(true)?;

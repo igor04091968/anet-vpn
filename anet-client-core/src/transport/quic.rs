@@ -1,6 +1,7 @@
 use super::{ClientTransport, ConnectionResult};
 use crate::auth::{AuthHandler, UdpAuthChannel};
 use crate::config::{CoreConfig, ServerConfig};
+use crate::connection_limits::ConnectionLimiter;
 use crate::socket::AnetUdpSocket;
 use anet_common::consts::PADDING_MTU;
 use anet_common::encryption::Cipher;
@@ -62,11 +63,26 @@ impl AsyncWrite for QuicDuplexStream {
 pub struct QuicTransport {
     config: CoreConfig,
     server: ServerConfig,
+    limiter: Arc<ConnectionLimiter>,
 }
 
 impl QuicTransport {
+    #[cfg(test)]
     pub fn new(config: CoreConfig, server: ServerConfig) -> Self {
-        Self { config, server }
+        let limiter = Arc::new(ConnectionLimiter::new(&config.connection_limits));
+        Self::with_limiter(config, server, limiter)
+    }
+
+    pub(crate) fn with_limiter(
+        config: CoreConfig,
+        server: ServerConfig,
+        limiter: Arc<ConnectionLimiter>,
+    ) -> Self {
+        Self {
+            config,
+            server,
+            limiter,
+        }
     }
 }
 
@@ -79,6 +95,7 @@ impl ClientTransport for QuicTransport {
             .to_socket_addrs()?
             .next()
             .ok_or_else(|| anyhow::anyhow!("Invalid server address"))?;
+        let permit = self.limiter.acquire().await?;
         let udp_socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
         let channel = UdpAuthChannel::new(udp_socket.clone(), server_addr);
 
@@ -104,12 +121,15 @@ impl ClientTransport for QuicTransport {
         )?);
         let nonce_prefix = auth_response.nonce_prefix.clone();
 
-        let anet_socket = Arc::new(AnetUdpSocket::new(
-            udp_socket,
-            cipher,
-            nonce_prefix,
-            self.config.stealth.clone(),
-        ));
+        let anet_socket = Arc::new(
+            AnetUdpSocket::new(
+                udp_socket,
+                cipher,
+                nonce_prefix,
+                self.config.stealth.clone(),
+            )
+            .with_connection_permit(permit),
+        );
 
         let mut ep_config = EndpointConfig::default();
         let _ = ep_config.max_udp_payload_size(PADDING_MTU as u16);

@@ -1,6 +1,8 @@
+use super::bounded_http::{BoundedHttpClient, send_request};
 use super::{ClientTransport, ConnectionResult};
 use crate::auth::{AuthChannel, AuthHandler};
 use crate::config::{CoreConfig, ServerConfig};
+use crate::connection_limits::ConnectionLimiter;
 use anet_common::consts::{CHANNEL_BUFFER_SIZE, MAX_PACKET_SIZE};
 use anet_common::handshake_fragmentation::FragmentConfig;
 use anet_common::http_help::BrowserProfile;
@@ -92,6 +94,7 @@ fn apply_stealth_headers(
 
 struct AHttpAuthChannel {
     client: Client,
+    bounded: Option<Arc<BoundedHttpClient>>,
     base_url: String,
     profile: BrowserProfile,
     is_auth_phase: Mutex<bool>,
@@ -117,7 +120,7 @@ impl AuthChannel for AHttpAuthChannel {
         let mut req = self.client.post(&req_path);
         req = apply_stealth_headers(req, &self.profile, host);
 
-        let resp = req.body(data.to_vec()).send().await?;
+        let resp = send_request(req.body(data.to_vec()), &self.bounded).await?;
 
         if !resp.status().is_success() {
             bail!("Server returned HTTP {}", resp.status());
@@ -141,11 +144,20 @@ impl AuthChannel for AHttpAuthChannel {
 pub struct AHttpTransport {
     config: CoreConfig,
     server: ServerConfig,
+    limiter: Arc<ConnectionLimiter>,
 }
 
 impl AHttpTransport {
-    pub fn new(config: CoreConfig, server: ServerConfig) -> Self {
-        Self { config, server }
+    pub(crate) fn with_limiter(
+        config: CoreConfig,
+        server: ServerConfig,
+        limiter: Arc<ConnectionLimiter>,
+    ) -> Self {
+        Self {
+            config,
+            server,
+            limiter,
+        }
     }
 
     async fn resolve_host(&self, host: &str, port: u16) -> Result<SocketAddr> {
@@ -173,7 +185,10 @@ impl ClientTransport for AHttpTransport {
         let port = dsn_url
             .port_or_known_default()
             .unwrap_or(if scheme == "https" { 443 } else { 80 });
-        let mut base_url = format!("{}://{}{}", scheme, target_host, dsn_url.path());
+        let mut base = dsn_url.clone();
+        base.set_query(None);
+        base.set_fragment(None);
+        let mut base_url = base.to_string();
 
         if base_url.ends_with('/') {
             base_url.pop();
@@ -229,7 +244,21 @@ impl ClientTransport for AHttpTransport {
             Err(e) => bail!("Cannot build a HTTP client: {}", e),
         };
 
+        let bounded = if self.config.connection_limits.max_connections != 0
+            || self.config.connection_limits.min_connect_interval_ms != 0
+        {
+            Some(Arc::new(BoundedHttpClient::new(
+                &dsn_url,
+                resolved_addr,
+                &self.config.ahttp,
+                self.limiter.clone(),
+            )?))
+        } else {
+            None
+        };
+
         let auth_channel = AHttpAuthChannel {
+            bounded: bounded.clone(),
             client: http_client.clone(),
             base_url: base_url.clone(),
             profile: profile.clone(),
@@ -333,6 +362,7 @@ impl ClientTransport for AHttpTransport {
                     Err(_) => break,
                 };
 
+                let bounded_clone = bounded.clone();
                 let http_client_clone = http_client.clone();
                 let uplink_method_clone = uplink_method.clone();
                 let traffic_url_clone = traffic_url.clone();
@@ -361,7 +391,11 @@ impl ClientTransport for AHttpTransport {
                         req = apply_stealth_headers(req, &profile_ul_clone, &host_ul_clone);
 
                         // Передаем payload.clone() — zero-copy для Bytes
-                        let res = req.body(reqwest::Body::from(payload.clone())).send().await;
+                        let res = send_request(
+                            req.body(reqwest::Body::from(payload.clone())),
+                            &bounded_clone,
+                        )
+                        .await;
 
                         match res {
                             Ok(resp) if resp.status().is_success() => {

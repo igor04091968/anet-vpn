@@ -42,3 +42,9 @@ private/
 *.log
 *.apk
 *.aab
+
+# Local diagnostic artifacts
+/dist/
+/tools/dpi-helper/dist/
+*.so
+*.h.generated

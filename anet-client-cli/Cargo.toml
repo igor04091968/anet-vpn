@@ -10,10 +10,12 @@ default = []
 per-app = ["anet-client-core/per-app"]
 
 [dependencies]
+serde_json = "1"
+tokio-util = { version = "0.7", features = ["rt"] }
 tokio = {workspace = true}
 log = {workspace = true}
 anyhow = {workspace = true}
-clap = {workspace = true}
+clap = {workspace = true, features = ["help", "usage", "error-context"]}
 serde = { workspace = true, features = ["derive"] }
 toml = {workspace = true}
 bytes = {workspace = true}
