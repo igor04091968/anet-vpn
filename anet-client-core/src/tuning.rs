@@ -125,6 +125,14 @@ pub fn suggest(
     } else {
         proposed.min(config.connection_limits.max_connections)
     };
+    if limit < 2 {
+        // HTTP/1.1 AHTTP needs separate long-poll and upload sockets.
+        candidates.retain(|c| c.transport != "ahttp");
+        anyhow::ensure!(
+            !candidates.is_empty(),
+            "ahttp_requires_two_sockets_choose_other_transport_or_change_limit"
+        );
+    }
     let parallel_problem = report
         .observations
         .iter()
@@ -142,7 +150,7 @@ pub fn suggest(
         notes.push("Параллельный TLS-тест не прошёл: уменьшаем число соединений и разнос между попытками; причина ограничения ещё не доказана.".into());
     }
     if has_ahttp && limit < 2 {
-        notes.push("Существующий N=1 сохранён. AHTTP может работать медленнее из-за общей очереди отправки и приёма.".into());
+        notes.push("Существующий N=1 сохранён. AHTTP исключён из подбора: для одновременного приёма и отправки ему нужны два внешних соединения.".into());
     }
     Ok(ConnectionPlan {
         profile_id: report.profile_id.clone(),
@@ -325,6 +333,27 @@ mod tests {
                 .unwrap()
                 .score,
             40
+        );
+    }
+    #[test]
+    fn preserves_endpoint_crypto_and_excludes_ahttp_with_one_socket() {
+        let (t, mut r) = fixture();
+        let t =
+            t.replace(
+                "wss://second.example:443/path",
+                "https://second.example:443/path",
+            )
+            .replace(
+                "group_id='p'",
+                "group_id='p'\ncrypto_algorithm='chacha20-poly1305'",
+            ) + "[connection_limits]\nmax_connections=1\n";
+        r.profile_id = profile_id(&t);
+        let p = suggest(&t, &r, "p").unwrap();
+        assert!(p.candidates.iter().all(|c| c.transport != "ahttp"));
+        let applied: toml::Value = toml::from_str(&apply(&t, &r, "p", 0).unwrap()).unwrap();
+        assert_eq!(
+            applied["servers"][0]["crypto_algorithm"].as_str(),
+            Some("chacha20-poly1305")
         );
     }
     #[test]
