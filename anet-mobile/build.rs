@@ -65,4 +65,22 @@ fn main() {
     writeln!(f, "pub const BUILD_TYPE: &str = \"{}\";", build_type).unwrap();
 
     println!("cargo:rerun-if-changed=build.rs");
+    // Rebuild embedded provenance when the checked-out commit changes.
+    for path in ["HEAD", "packed-refs"] {
+        if let Ok(output) = Command::new("git").args(["rev-parse", "--git-path", path]).output() {
+            if output.status.success() {
+                println!("cargo:rerun-if-changed={}", String::from_utf8_lossy(&output.stdout).trim());
+            }
+        }
+    }
+    if let Ok(output) = Command::new("git").args(["symbolic-ref", "-q", "HEAD"]).output() {
+        if output.status.success() {
+            let reference = String::from_utf8_lossy(&output.stdout);
+            if let Ok(path) = Command::new("git").args(["rev-parse", "--git-path", reference.trim()]).output() {
+                if path.status.success() {
+                    println!("cargo:rerun-if-changed={}", String::from_utf8_lossy(&path.stdout).trim());
+                }
+            }
+        }
+    }
 }
