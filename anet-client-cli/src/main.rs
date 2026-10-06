@@ -252,7 +252,7 @@ async fn main() -> Result<()> {
 
 #[derive(Debug, Parser)]
 #[command(
-    version = "1.0.3",
+    version = "1.0.4",
     about = "ANet VPN client with diagnostics and reversible connection tuning"
 )]
 pub struct Opt {
