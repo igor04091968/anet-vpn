@@ -21,7 +21,7 @@ per_app_mode = "{{PER_APP_MODE}}"
 # per_app_mode = "exclude"
 
 # Настройки маршрутизации (Split Tunneling)
-route_for = {{ROUTE_FOR}}
+route_for = []
 exclude_route_for = {{EXCLUDE_ROUTE_FOR}}
 
 # DNS-серверы для разрешения доменов
