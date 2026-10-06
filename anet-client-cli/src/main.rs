@@ -139,6 +139,10 @@ async fn main() -> Result<()> {
         let network = tuning::network_context(&config.main.tun_name).await?;
         #[cfg(not(target_os = "linux"))]
         let network = "system_routes".to_string();
+        #[cfg(target_os = "linux")]
+        let active_session = tuning::active_tunnel().await?;
+        #[cfg(not(target_os = "linux"))]
+        let active_session = false;
         let mut report = anet_client_core::diagnostics::run(
             &config,
             anet_client_core::diagnostics::DiagnosticOptions {
@@ -146,6 +150,7 @@ async fn main() -> Result<()> {
                 helper_path: opt.dpi_helper,
                 echo_endpoint: opt.diagnostics_echo_endpoint,
                 network_context: network,
+                active_session,
                 ..Default::default()
             },
             cancel,

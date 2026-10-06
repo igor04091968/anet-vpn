@@ -118,11 +118,14 @@ pub async fn network_context(exclude_tun: &str) -> Result<String> {
         exclude_tun,
     ))
 }
-pub async fn guard_new_vpn() -> Result<()> {
+pub async fn active_tunnel() -> Result<bool> {
     let addresses: Vec<Value> =
         serde_json::from_str(&command("ip", &["-j", "-d", "address", "show"]).await?)?;
+    Ok(addresses.iter().any(|a| overlay(a) && is_up(a)))
+}
+pub async fn guard_new_vpn() -> Result<()> {
     ensure!(
-        !addresses.iter().any(|a| overlay(a) && is_up(a)),
+        !active_tunnel().await?,
         "An active VPN/tunnel exists. Preview/export are allowed; tuned connection requires stopping it manually. No existing VPN was changed."
     );
     Ok(())
