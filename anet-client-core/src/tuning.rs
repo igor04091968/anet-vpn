@@ -3,6 +3,7 @@ use crate::{
     config::{CoreConfig, TransportMode},
     diagnostics::DiagnosticReport,
 };
+use anet_common::encryption::CryptoAlgorithm;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -14,6 +15,7 @@ pub struct Candidate {
     pub transport: String,
     pub evidence: String,
     pub score: i32,
+    pub crypto_algorithm: String,
 }
 #[derive(Debug, Serialize)]
 pub struct ConnectionPlan {
@@ -107,17 +109,39 @@ pub fn suggest(
                 "Проверка неоднозначна или не прошла; остаётся резервным вариантом",
             )
         };
+        let algorithm = server.crypto_algorithm.unwrap_or(config.crypto.algorithm);
+        let gost = algorithm == CryptoAlgorithm::KuznyechikMgm;
+        let evidence = if gost {
+            format!("{evidence}; ГОСТ задан профилем, авторизация ещё не подтверждена")
+        } else {
+            evidence.into()
+        };
         candidates.push(Candidate {
             index,
             name: server.get_name(),
             dsn: server.dsn.clone(),
             transport,
-            evidence: evidence.into(),
+            evidence,
             score,
+            crypto_algorithm: if gost {
+                "kuznyechik-mgm"
+            } else {
+                "chacha20-poly1305"
+            }
+            .into(),
         });
     }
     anyhow::ensure!(!candidates.is_empty(), "no_endpoints_in_selected_group");
-    candidates.sort_by_key(|c| (std::cmp::Reverse(c.score), c.index));
+    // Prefer configured GOST when reachability has some evidence, including
+    // DNS-only QUIC candidates that still require a real ANet handshake.
+    // Failed/unobserved GOST endpoints must not displace reachable alternatives.
+    candidates.sort_by_key(|c| {
+        (
+            std::cmp::Reverse(c.score >= 60 && c.crypto_algorithm == "kuznyechik-mgm"),
+            std::cmp::Reverse(c.score),
+            c.index,
+        )
+    });
     let has_ahttp = candidates.iter().any(|c| c.transport == "ahttp");
     let proposed = if has_ahttp { 2 } else { 1 };
     let limit = if config.connection_limits.max_connections == 0 {
@@ -146,6 +170,12 @@ pub fn suggest(
         "Ключи, алгоритм шифрования, адреса серверов и маршруты сохраняются. MTU принимается от авторизованного сервера.".into(),
         "uTLS-отпечатки используются только в диагностике; успешный отпечаток не подменяет рабочий транспорт.".into(),
     ];
+    if candidates
+        .iter()
+        .any(|c| c.crypto_algorithm == "kuznyechik-mgm")
+    {
+        notes.push("ГОСТ предпочитается среди кандидатов с признаками доступности. Алгоритм берётся из профиля сервера; диагностика не подтверждает ГОСТ-авторизацию. QUIC после DNS требует реального подключения. Остальные серверы выбранной группы сохраняются для резерва.".into());
+    }
     if parallel_problem {
         notes.push("Параллельный TLS-тест не прошёл: уменьшаем число соединений и разнос между попытками; причина ограничения ещё не доказана.".into());
     }
@@ -363,5 +393,93 @@ mod tests {
         assert!(suggest(&t, &r, "p").is_err());
         r.created_at_ms = u64::MAX;
         assert!(suggest(&t, &r, "p").is_err());
+    }
+
+    fn mixed_crypto_fixture() -> (String, DiagnosticReport) {
+        let (text, mut report) = fixture();
+        let text = text.replace(
+            "dsn='wss://second.example:443/path'",
+            "dsn='wss://second.example:443/path'\ncrypto_algorithm='chacha20-poly1305'",
+        );
+        report.profile_id = profile_id(&text);
+        (text, report)
+    }
+
+    #[test]
+    fn prefers_configured_gost_quic_but_requires_real_authentication() {
+        let (text, mut report) = mixed_crypto_fixture();
+        report.observations.push(Observation {
+            endpoint_index: 0,
+            host: "first.example".into(),
+            port: 443,
+            transport: "quic".into(),
+            stage: "dns".into(),
+            status: "passed".into(),
+            code: "resolved".into(),
+            elapsed_ms: 1,
+            details: None,
+        });
+        let plan = suggest(&text, &report, "p").unwrap();
+        assert_eq!(
+            plan.candidates.iter().map(|c| c.index).collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert_eq!(plan.candidates[0].crypto_algorithm, "kuznyechik-mgm");
+        assert_eq!(plan.candidates[1].crypto_algorithm, "chacha20-poly1305");
+        assert!(plan.candidates[0].evidence.contains("ещё не подтверждена"));
+        let applied: toml::Value = toml::from_str(&apply(&text, &report, "p", 0).unwrap()).unwrap();
+        assert_eq!(
+            applied["servers"][0]["dsn"].as_str(),
+            Some("quic://first.example:443")
+        );
+        assert_eq!(
+            applied["servers"][1]["crypto_algorithm"].as_str(),
+            Some("chacha20-poly1305")
+        );
+    }
+
+    #[test]
+    fn unreachable_or_unobserved_gost_does_not_displace_reachable_chacha() {
+        let (text, mut report) = mixed_crypto_fixture();
+        assert_eq!(suggest(&text, &report, "p").unwrap().candidates[0].index, 1);
+        report.observations.push(Observation {
+            endpoint_index: 0,
+            host: "first.example".into(),
+            port: 443,
+            transport: "quic".into(),
+            stage: "dns".into(),
+            status: "inconclusive".into(),
+            code: "resolution_failed_or_timeout".into(),
+            elapsed_ms: 1,
+            details: None,
+        });
+        assert_eq!(suggest(&text, &report, "p").unwrap().candidates[0].index, 1);
+    }
+
+    #[test]
+    fn endpoint_override_controls_crypto_preference_and_manual_choice_is_kept() {
+        let (text, mut report) = mixed_crypto_fixture();
+        let text = text
+            .replace(
+                "algorithm='kuznyechik-mgm'",
+                "algorithm='chacha20-poly1305'",
+            )
+            .replace(
+                "crypto_algorithm='chacha20-poly1305'",
+                "crypto_algorithm='kuznyechik-mgm'",
+            );
+        report.profile_id = profile_id(&text);
+        let plan = suggest(&text, &report, "p").unwrap();
+        assert_eq!(plan.candidates[0].index, 1);
+        assert_eq!(plan.candidates[0].crypto_algorithm, "kuznyechik-mgm");
+        let applied: toml::Value = toml::from_str(&apply(&text, &report, "p", 0).unwrap()).unwrap();
+        assert_eq!(
+            applied["servers"][0]["dsn"].as_str(),
+            Some("quic://first.example:443")
+        );
+        assert_eq!(
+            applied["crypto"]["algorithm"].as_str(),
+            Some("chacha20-poly1305")
+        );
     }
 }
