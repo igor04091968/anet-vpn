@@ -265,6 +265,8 @@ pub struct ANetApp {
     toast_message: Option<String>,
     toast_until: Option<std::time::Instant>,
 
+    #[cfg(target_os = "linux")]
+    diagnostics: DiagnosticsState,
     status_text: String,
     status_color: egui::Color32,
 }
@@ -1220,6 +1222,8 @@ impl ANetApp {
             toast_message: None,
             toast_until: None,
 
+            #[cfg(target_os = "linux")]
+            diagnostics: DiagnosticsState::default(),
             status_text: "CONNECTION".to_string(),
             status_color: egui::Color32::from_rgb(128, 128, 128),
         };
@@ -1930,6 +1934,8 @@ impl eframe::App for ANetApp {
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
 
         self.drain_events();
+        #[cfg(target_os = "linux")]
+        self.show_diagnostics(ctx);
 
         let is_minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
 
@@ -2016,7 +2022,7 @@ impl eframe::App for ANetApp {
                                     ..Default::default()
                                 });
 
-                                let version_str = format!("{} ({})", GIT_TAG, COMMIT_HASH);
+                                let version_str = format!("{} ({})", env!("CARGO_PKG_VERSION"), COMMIT_HASH);
                                 job.append(&version_str, 0.0, TextFormat {
                                     font_id,
                                     color: grey_color,
@@ -3016,6 +3022,10 @@ impl eframe::App for ANetApp {
                 ui.add_space(16.0);
 
                 ui.vertical_centered(|ui| {
+                    #[cfg(target_os = "linux")]
+                    if ui.button("Диагностика").clicked() {
+                        self.diagnostics.open = true;
+                    }
                     if let Some(err) = &self.config_err {
                         ui.label(egui::RichText::new(err).color(egui::Color32::RED));
                     } else {
@@ -3458,5 +3468,133 @@ impl eframe::App for ANetApp {
                 self.toast_until = None;
             }
         }
+    }
+}
+
+
+#[cfg(target_os = "linux")]
+enum DiagnosticsOutcome {
+    Finished(Result<Arc<crate::diagnostics_ui::Session>, String>),
+    Planned(Result<serde_json::Value, String>),
+    Exported(Result<PathBuf, String>),
+}
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct DiagnosticsState {
+    open: bool,
+    busy: bool,
+    session: Option<Arc<crate::diagnostics_ui::Session>>,
+    cancel: Option<anet_client_core::diagnostics::CancellationToken>,
+    receiver: Option<Receiver<DiagnosticsOutcome>>,
+    plan: Option<serde_json::Value>,
+    group: String,
+    candidate: usize,
+    message: String,
+}
+#[cfg(target_os = "linux")]
+impl Drop for DiagnosticsState {
+    fn drop(&mut self) { if let Some(cancel) = &self.cancel { cancel.cancel(); } }
+}
+#[cfg(target_os = "linux")]
+impl ANetApp {
+    fn start_diagnostics(&mut self, extended: bool, ctx: &egui::Context) {
+        let config = lock_ignore_poison(&self.settings).get_active_config();
+        let Some(config) = config else {
+            self.diagnostics.message = "Сначала выберите клиентский конфиг".into(); return;
+        };
+        let cancel = anet_client_core::diagnostics::CancellationToken::new();
+        let (tx,rx) = channel();
+        self.diagnostics.busy = true;
+        self.diagnostics.plan = None;
+        self.diagnostics.session = None;
+        self.diagnostics.message = "Проверяем сеть и серверы…".into();
+        self.diagnostics.cancel = Some(cancel.clone());
+        self.diagnostics.receiver = Some(rx);
+        let ctx = ctx.clone();
+        self.rt.spawn(async move {
+            let result = crate::diagnostics_ui::Session::run(config.content,config.id,extended,cancel).await.map(Arc::new).map_err(|e|e.to_string());
+            let _ = tx.send(DiagnosticsOutcome::Finished(result)); ctx.request_repaint();
+        });
+    }
+    fn show_diagnostics(&mut self, ctx: &egui::Context) {
+        let outcome = self.diagnostics.receiver.as_ref().and_then(|rx| rx.try_recv().ok());
+        if let Some(outcome) = outcome {
+            self.diagnostics.busy = false; self.diagnostics.cancel = None; self.diagnostics.receiver = None;
+            match outcome {
+                DiagnosticsOutcome::Finished(Ok(session)) => {
+                    self.diagnostics.group = session.groups[0].0.clone();
+                    self.diagnostics.message = "Проверка завершена".into();
+                    self.diagnostics.session = Some(session);
+                }
+                DiagnosticsOutcome::Planned(Ok(plan)) => {
+                    self.diagnostics.candidate = plan["candidates"][0]["index"].as_u64().unwrap_or(0) as usize;
+                    self.diagnostics.plan = Some(plan); self.diagnostics.message = "Предварительные настройки подобраны".into();
+                }
+                DiagnosticsOutcome::Exported(Ok(path)) => self.diagnostics.message = format!("Копия сохранена: {}. Добавьте её через выбор конфигурации.",path.display()),
+                DiagnosticsOutcome::Finished(Err(e)) | DiagnosticsOutcome::Planned(Err(e)) | DiagnosticsOutcome::Exported(Err(e)) => self.diagnostics.message = e,
+            }
+        }
+        if !self.diagnostics.open { return; }
+        let mut open = true;
+        egui::Window::new("Диагностика ANet").open(&mut open).default_width(690.0).default_height(490.0).resizable(true).show(ctx,|ui| {
+            ui.label("Проверка использует текущие DNS и маршруты. Настройки VPN не меняются.");
+            ui.horizontal(|ui| {
+                if ui.add_enabled(!self.diagnostics.busy,egui::Button::new("Быстрая")).clicked() { self.start_diagnostics(false,ctx); }
+                if ui.add_enabled(!self.diagnostics.busy,egui::Button::new("Расширенная")).clicked() { self.start_diagnostics(true,ctx); }
+                if self.diagnostics.busy { ui.spinner(); if self.diagnostics.cancel.is_some() && ui.button("Отменить").clicked() { if let Some(cancel)=&self.diagnostics.cancel {cancel.cancel();} } }
+            });
+            ui.label("Расширенная проверка создаёт тестовые TLS-соединения; при действующем VPN параллельный тест пропускается.");
+            ui.label(&self.diagnostics.message);
+            if let Some(session) = self.diagnostics.session.clone() {
+                let active = lock_ignore_poison(&self.settings).get_active_config();
+                let unchanged = active.as_ref().is_some_and(|a| a.id == session.config_id && a.content == session.source);
+                egui::ScrollArea::vertical().max_height(270.0).show(ui,|ui| {
+                    egui::Grid::new("anet-diagnostic-observations").striped(true).show(ui,|ui| {
+                        ui.strong("Сервер"); ui.strong("Проверка"); ui.strong("Результат");ui.end_row();
+                        for row in &session.report.observations {
+                            ui.label(format!("{}:{} ({})",row.host,row.port,row.transport));
+                            ui.label(&row.stage);
+                            let status = match row.status.as_str() {"passed"=>"Успешно","failed"=>"Ошибка","skipped"=>"Пропущено",_=>&row.status};
+                            ui.label(format!("{} · {} · {} мс",status,row.code,row.elapsed_ms));ui.end_row();
+                        }
+                    });
+                    for note in &session.report.recommendations { ui.label(note); }
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Копировать отчёт").clicked() { if let Ok(text)=session.report.to_json() {ui.ctx().copy_text(text);} }
+                    egui::ComboBox::from_id_salt("diagnostic-group").selected_text(session.groups.iter().find(|(id,_)|id==&self.diagnostics.group).map(|(_,name)|name.as_str()).unwrap_or("Группа")).show_ui(ui,|ui| {
+                        for (id,name) in &session.groups { if ui.selectable_value(&mut self.diagnostics.group,id.clone(),name).changed() {self.diagnostics.plan=None;} }
+                    });
+                    if ui.add_enabled(unchanged && !self.diagnostics.busy,egui::Button::new("Подобрать настройки")).clicked() {
+                        let group=self.diagnostics.group.clone();let (tx,rx)=channel();let ctx=ctx.clone();
+                        self.diagnostics.busy=true;self.diagnostics.receiver=Some(rx);self.diagnostics.message="Подбираем настройки…".into();
+                        self.rt.spawn(async move {let result=session.plan(&group).await.map_err(|e|e.to_string());let _=tx.send(DiagnosticsOutcome::Planned(result));ctx.request_repaint();});
+                    }
+                });
+                if !unchanged { ui.colored_label(egui::Color32::YELLOW,"Активный профиль изменился — повторите диагностику"); }
+                if let Some(plan)=self.diagnostics.plan.clone() {
+                    ui.label(format!("Не более {} соединений; интервал попыток {} мс",plan["max_connections"],plan["min_connect_interval_ms"]));
+                    if let Some(candidates)=plan["candidates"].as_array() {
+                        for item in candidates {
+                            let index=item["index"].as_u64().unwrap_or(0) as usize;
+                            ui.radio_value(&mut self.diagnostics.candidate,index,format!("{} · {} · {}",item["name"].as_str().unwrap_or(""),item["transport"].as_str().unwrap_or(""),item["evidence"].as_str().unwrap_or("")));
+                        }
+                    }
+                    ui.label("Это предварительный подбор. Работоспособность подтверждается авторизацией и передачей данных. Исходный профиль сохраняется.");
+                    if ui.add_enabled(unchanged && !self.diagnostics.busy,egui::Button::new("Сохранить настроенную копию…")).clicked() {
+                        let session=self.diagnostics.session.as_ref().unwrap().clone();let group=self.diagnostics.group.clone();let candidate=self.diagnostics.candidate;
+                        let (tx,rx)=channel();let ctx=ctx.clone();self.diagnostics.busy=true;self.diagnostics.receiver=Some(rx);
+                        self.rt.spawn(async move {
+                            let result=if let Some(file)=rfd::AsyncFileDialog::new().add_filter("ANet TOML",&["toml"]).set_file_name("client.toml").save_file().await {
+                                let path=file.path().to_path_buf();session.export(&group,candidate,&path).await.map(|_|path).map_err(|e|e.to_string())
+                            } else {Err("Сохранение отменено".into())};
+                            let _=tx.send(DiagnosticsOutcome::Exported(result));ctx.request_repaint();
+                        });
+                    }
+                }
+            }
+        });
+        self.diagnostics.open=open;
+        if !open {if let Some(cancel)=&self.diagnostics.cancel {cancel.cancel();}}
     }
 }

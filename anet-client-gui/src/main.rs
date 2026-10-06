@@ -46,7 +46,7 @@ fn main() -> Result<(), eframe::Error> {
     let icon = icons::load_icon();
 
     // Формируем заголовок окна: "ANet VPN v0.5.2 (5313b9e)"
-    let window_title = format!("ANet VPN {} ({})", GIT_TAG, COMMIT_HASH);
+    let window_title = format!("ANet VPN {} ({})", env!("CARGO_PKG_VERSION"), COMMIT_HASH);
 
 let options = eframe::NativeOptions {
     viewport: egui::ViewportBuilder::default()

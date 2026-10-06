@@ -49,4 +49,16 @@ fn main() {
     writeln!(f, "pub const GIT_TAG: &str = \"{}\";", git_tag).unwrap();
     writeln!(f, "pub const COMMIT_HASH: &str = \"{}\";", commit_hash).unwrap();
     println!("cargo:rerun-if-changed=build.rs");
+    for git_path in ["HEAD", "packed-refs"] {
+        if let Ok(out) = Command::new("git").args(["rev-parse", "--git-path", git_path]).output() {
+            if out.status.success() { println!("cargo:rerun-if-changed={}", String::from_utf8_lossy(&out.stdout).trim()); }
+        }
+    }
+    if let Ok(out) = Command::new("git").args(["symbolic-ref", "-q", "HEAD"]).output() {
+        if out.status.success() {
+            if let Ok(path) = Command::new("git").args(["rev-parse", "--git-path", String::from_utf8_lossy(&out.stdout).trim()]).output() {
+                if path.status.success() { println!("cargo:rerun-if-changed={}", String::from_utf8_lossy(&path.stdout).trim()); }
+            }
+        }
+    }
 }
