@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Local CLI checks: no authorized keys, no UDP session, no TUN or route edits."""
-import hashlib,json,os,pathlib,subprocess,sys,tempfile
+import hashlib,json,os,pathlib,socket,subprocess,sys,tempfile
 binary=str(pathlib.Path(sys.argv[1]).resolve())
 base=pathlib.Path(sys.argv[2]).resolve();base.mkdir(parents=True,exist_ok=True)
 checks=[]
@@ -22,7 +22,7 @@ with tempfile.TemporaryDirectory(prefix='cli-smoke-',dir=base) as tmp:
  source.write_text("[keys]\nprivate_key='public-test-dummy'\nserver_pub_key='public-test-dummy'\n[main]\ntun_name='anet-cli-smoke'\n[[servers]]\ndsn='quic://127.0.0.1:9'\n")
  orig=hashlib.sha256(source.read_bytes()).hexdigest()
  common=['--cfg',str(source)]
- run(['--version'],contains='1.0.3');checks.append('product_version')
+ run(['--version'],contains='1.0.4');checks.append('product_version')
  p=run(common+['--diagnose','--diagnostics-json',str(report)])
  data=json.loads(p.stdout)
  assert data['profile_id']==orig and data['network_context'].startswith('linux-routes:')
@@ -55,6 +55,29 @@ with tempfile.TemporaryDirectory(prefix='cli-smoke-',dir=base) as tmp:
  checks.append('reject_mixed_diagnostic_options')
  assert hashlib.sha256(source.read_bytes()).hexdigest()==orig
  checks.append('original_profile_unchanged')
+ # Real loopback TCP probes; neither listener performs ANet authentication.
+ # Same reachability evidence must prefer the profile-authorized GOST endpoint.
+ with socket.socket() as plain, socket.socket() as gost:
+  for listener in (plain,gost):
+   listener.bind(('127.0.0.1',0));listener.listen(4)
+  mixed=d/'mixed.toml';mixed_report=d/'mixed-report.json';mixed_output=d/'mixed-output.toml'
+  mixed.write_text(f"[keys]\nprivate_key='public-test-dummy'\nserver_pub_key='public-test-dummy'\n[main]\ntun_name='anet-cli-smoke'\n[[servers]]\ndsn='ssh://127.0.0.1:{plain.getsockname()[1]}'\n[[servers]]\ndsn='ssh://127.0.0.1:{gost.getsockname()[1]}'\ncrypto_algorithm='kuznyechik-mgm'\n")
+  mixed_hash=hashlib.sha256(mixed.read_bytes()).hexdigest()
+  run(['--cfg',str(mixed),'--diagnose','--diagnostics-json',str(mixed_report)])
+  mixed_args=['--cfg',str(mixed),'--tuning-report',str(mixed_report)]
+  preferred=json.loads(run(mixed_args).stdout)['candidates']
+  assert [c['index'] for c in preferred]==[1,0]
+  assert preferred[0]['crypto_algorithm']=='kuznyechik-mgm'
+  assert 'ещё не подтверждена' in preferred[0]['evidence']
+  run(mixed_args+['--tuning-candidate','1','--tuning-output',str(mixed_output)])
+  import tomllib
+  exported=tomllib.loads(mixed_output.read_text())
+  assert exported['servers'][0]['crypto_algorithm']=='kuznyechik-mgm'
+  assert exported['servers'][0]['dsn']==f'ssh://127.0.0.1:{gost.getsockname()[1]}'
+  assert exported['servers'][1]['dsn']==f'ssh://127.0.0.1:{plain.getsockname()[1]}'
+  assert (mixed_output.stat().st_mode&0o777)==0o600
+  assert hashlib.sha256(mixed.read_bytes()).hexdigest()==mixed_hash
+  checks.append('real_tcp_preview_prefers_gost_and_export_preserves_plain_fallback')
 after=subprocess.check_output(['ip','-j','route','show','table','all'])
 assert before==after,'Route state changed during local smoke test'
 checks.append('route_tables_unchanged')
