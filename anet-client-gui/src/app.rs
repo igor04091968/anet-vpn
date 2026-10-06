@@ -3562,9 +3562,9 @@ impl ANetApp {
                 });
                 ui.horizontal(|ui| {
                     if ui.button("Копировать отчёт").clicked() { if let Ok(text)=session.report.to_json() {ui.ctx().copy_text(text);} }
-                    egui::ComboBox::from_id_salt("diagnostic-group").selected_text(session.groups.iter().find(|(id,_)|id==&self.diagnostics.group).map(|(_,name)|name.as_str()).unwrap_or("Группа")).show_ui(ui,|ui| {
+                    ui.add_enabled_ui(!self.diagnostics.busy, |ui| { egui::ComboBox::from_id_salt("diagnostic-group").selected_text(session.groups.iter().find(|(id,_)|id==&self.diagnostics.group).map(|(_,name)|name.as_str()).unwrap_or("Группа")).show_ui(ui,|ui| {
                         for (id,name) in &session.groups { if ui.selectable_value(&mut self.diagnostics.group,id.clone(),name).changed() {self.diagnostics.plan=None;} }
-                    });
+                    }); });
                     if ui.add_enabled(unchanged && !self.diagnostics.busy,egui::Button::new("Подобрать настройки")).clicked() {
                         let group=self.diagnostics.group.clone();let (tx,rx)=channel();let ctx=ctx.clone();
                         self.diagnostics.busy=true;self.diagnostics.receiver=Some(rx);self.diagnostics.message="Подбираем настройки…".into();
