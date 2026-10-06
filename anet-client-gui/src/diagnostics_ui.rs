@@ -47,7 +47,7 @@ async fn call(args: &[String], cancel: &CancellationToken) -> Result<String> {
     command.args(args).kill_on_drop(true);
     let output = tokio::select! {
         _ = cancel.cancelled() => anyhow::bail!("Диагностика отменена"),
-        result = tokio::time::timeout(Duration::from_secs(180), command.output()) => result.context("Время проверки истекло")??,
+        result = tokio::time::timeout(Duration::from_secs(210), command.output()) => result.context("Время проверки истекло")??,
     };
     ensure!(output.stdout.len() <= 2_097_152, "Слишком большой отчёт");
     ensure!(
