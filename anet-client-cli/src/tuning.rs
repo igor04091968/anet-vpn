@@ -127,6 +127,28 @@ pub async fn guard_new_vpn() -> Result<()> {
     );
     Ok(())
 }
+#[cfg(target_os = "linux")]
+fn acquire_lock(path: &Path) -> Result<std::fs::File> {
+    use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)?;
+    ensure!(
+        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
+        "Another tuned VPN launch is running; existing connection was not changed"
+    );
+    Ok(file)
+}
+#[cfg(target_os = "linux")]
+pub fn lock_launch() -> Result<std::fs::File> {
+    acquire_lock(Path::new("/run/anet-client-tuning.lock"))
+}
+
 pub fn check_report(
     source: &str,
     report: &DiagnosticReport,
@@ -386,5 +408,23 @@ mod cache_tests {
         assert!(preview["candidates"][0].get("dsn").is_none());
         c.verified_at_ms = now_ms() - 1800001;
         assert!(c.validate(&source, "", "linux-routes:test").is_err());
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod lock_tests {
+    use super::*;
+    #[test]
+    fn launch_lock_is_exclusive_and_released_on_drop() {
+        let p = std::env::temp_dir().join(format!(
+            "anet-launch-lock-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let first = acquire_lock(&p).unwrap();
+        assert!(acquire_lock(&p).is_err());
+        drop(first);
+        drop(acquire_lock(&p).unwrap());
+        std::fs::remove_file(p).unwrap();
     }
 }

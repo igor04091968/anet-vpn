@@ -177,6 +177,14 @@ async fn main() -> Result<()> {
         generate_ascii_art(GIT_TAG, BUILD_TYPE, COMMIT_HASH, BUILD_TIME)
     );
 
+    #[cfg(target_os = "linux")]
+    let _launch_lock = if opt.tuning_connect {
+        let lock = tuning::lock_launch()?;
+        tuning::guard_new_vpn().await?;
+        Some(lock)
+    } else {
+        None
+    };
     let route_mgr = create_route_manager(config.main.manual_routing)?;
     let tun_fac = Box::new(DesktopTunFactory::new(
         config.main.tun_name.clone(),
