@@ -84,3 +84,5 @@ Telegram-доставке и настройке WebUI — в [`ops/webui/README.
 В `.assets/` лежат снимки интерфейсов Windows, Android и панели администратора.
 
 Диагностика и ручной подбор соединения Android: [инструкция](docs/dpi-diagnostics-usage.ru.md).
+
+Диагностика и ручной подбор в Linux CLI: [инструкция](docs/linux-client-tuning.ru.md).
