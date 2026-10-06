@@ -9,6 +9,13 @@ def run(args,ok=True,contains=None):
  assert (p.returncode==0)==ok, (args,p.returncode,p.stderr)
  if contains: assert contains in p.stdout+p.stderr,(args,p.stdout,p.stderr)
  return p
+with tempfile.TemporaryDirectory(prefix='cli-empty-',dir=base) as empty:
+ p=subprocess.run([binary],cwd=empty,capture_output=True,text=True,timeout=20)
+ assert p.returncode==0 and '--cfg' in p.stdout and 'Конфигурация' in p.stdout,(p.returncode,p.stdout,p.stderr)
+ checks.append('no_arguments_missing_default_config_shows_help')
+ missing=str(pathlib.Path(empty)/'missing.toml')
+ run(['--cfg',missing],False,contains=missing)
+ checks.append('missing_explicit_config_identifies_path')
 before=subprocess.check_output(['ip','-j','route','show','table','all'])
 with tempfile.TemporaryDirectory(prefix='cli-smoke-',dir=base) as tmp:
  d=pathlib.Path(tmp);source=d/'client.toml';report=d/'report.json';output=d/'tuned.toml'

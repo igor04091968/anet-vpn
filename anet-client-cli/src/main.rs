@@ -6,7 +6,7 @@ use anet_client_core::client::AnetClient;
 use anet_client_core::config::CoreConfig;
 use anet_client_core::platform::{create_route_manager, requires_elevated_privileges};
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use log::{error, info};
 use std::process::exit;
 use std::sync::Arc;
@@ -42,6 +42,11 @@ async fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let opt = Opt::parse();
+    if std::env::args_os().len() == 1 && !std::path::Path::new(&opt.cfg).try_exists()? {
+        Opt::command().print_help()?;
+        println!("\n\nКонфигурация {} не найдена. Укажите файл: anet-client --cfg /путь/к/client.toml", opt.cfg);
+        return Ok(());
+    }
     if let Some(path) = &opt.reset_tuning_cache {
         tuning::read_cache(path).await?;
         tokio::fs::remove_file(path).await?;
@@ -55,7 +60,9 @@ async fn main() -> Result<()> {
     {
         anyhow::bail!("Diagnostic options require --diagnose or --diagnose-extended");
     }
-    let source = read_to_string(&opt.cfg).await?;
+    let source = read_to_string(&opt.cfg)
+        .await
+        .with_context(|| format!("Не удалось прочитать конфигурацию {}. Укажите существующий файл через --cfg", opt.cfg))?;
     let mut config: CoreConfig = toml::from_str(&source)?;
     let has_tuning = opt.tuning_report.is_some() || opt.tuning_connect;
     anyhow::ensure!(
